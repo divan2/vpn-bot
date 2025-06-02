@@ -71,6 +71,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     else:
+
         # Пользователь уже существует
         await show_main_menu(update, context)
 
@@ -180,7 +181,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
     remaining_days = (expire_date - datetime.now()).days
-    remaining_traffic_gb = (user_data['traffic_limit'] - user_data['traffic_used']) // (1024 ** 3))
+    remaining_traffic_gb = (user_data['traffic_limit'] - user_data['traffic_used']) // (1024 ** 3)
 
     await query.edit_message_text(
     f"📊 Ваша статистика:\n\n"
@@ -192,9 +193,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 )
 
-async
-
-def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
@@ -339,7 +338,16 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         expire_date = datetime.strptime(user['expire_date'], '%Y-%m-%d')
         remaining_days = (expire_date - datetime.now()).days
         message += f"• @{user['username']} | 🕒 {remaining_days}д | 📊 {user['traffic_used'] // 1024 ** 3}/{user['traffic_limit'] // 1024 ** 3}ГБ\n"
+    # После инициализации
+    print("Проверка работы X-UI API:")
+    print("Список inbounds:", xui.get_inbounds())
 
+    test_uuid = xui.create_user("test_user", 5, 7)
+    print("Создан тестовый пользователь:", test_uuid)
+
+    if test_uuid:
+        print("Обновление пользователя:",
+              xui.update_user(test_uuid, traffic_gb=10, expire_days=30))
     await query.edit_message_text(message)
 
 

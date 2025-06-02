@@ -1,15 +1,20 @@
 import requests
 import json
 import uuid
-import os
+import logging
+from datetime import datetime
+
+# Настройка логгера
+logger = logging.getLogger(__name__)
 
 
 class XUIAPI:
     def __init__(self, panel_url, username, password):
-        self.panel_url = panel_url
+        self.panel_url = panel_url.rstrip('/')
         self.username = username
         self.password = password
-        self.cookies = self._login()
+        self.cookies = None
+        self._login()
 
     def _login(self):
         try:
@@ -18,31 +23,105 @@ class XUIAPI:
                 data={"username": self.username, "password": self.password},
                 timeout=10
             )
-            return response.cookies if response.status_code == 200 else None
+            if response.status_code == 200:
+                self.cookies = response.cookies
+                logger.info("Успешная авторизация в X-UI")
+                return True
+            logger.error("Ошибка авторизации: %s", response.text)
+            return False
         except Exception as e:
-            print(f"Ошибка авторизации: {e}")
-            return None
+            logger.error("Ошибка подключения к X-UI: %s", str(e))
+            return False
+
+    def get_inbounds(self):
+        """Получить список всех inbounds"""
+        if not self.cookies:
+            self._login()
+
+        try:
+            response = requests.get(
+                f"{self.panel_url}/xui/inbound/list",
+                cookies=self.cookies,
+                timeout=10
+            )
+            if response.status_code == 200:
+                return response.json().get('data', [])
+            logger.error("Ошибка получения inbounds: %s", response.text)
+            return []
+        except Exception as e:
+            logger.error("Ошибка получения inbounds: %s", str(e))
+            return []
+
+    def create_inbound(self, data):
+        """Создать новый inbound"""
+        if not self.cookies:
+            self._login()
+
+        try:
+            response = requests.post(
+                f"{self.panel_url}/xui/inbound/add",
+                data=data,
+                cookies=self.cookies,
+                timeout=15
+            )
+            if response.status_code == 200:
+                logger.info("Inbound успешно создан")
+                return True
+            logger.error("Ошибка создания inbound: %s", response.text)
+            return False
+        except Exception as e:
+            logger.error("Ошибка создания inbound: %s", str(e))
+            return False
+
+    def update_inbound(self, inbound_id, data):
+        """Обновить существующий inbound"""
+        if not self.cookies:
+            self._login()
+
+        try:
+            response = requests.post(
+                f"{self.panel_url}/xui/inbound/update/{inbound_id}",
+                data=data,
+                cookies=self.cookies,
+                timeout=15
+            )
+            if response.status_code == 200:
+                logger.info("Inbound успешно обновлен")
+                return True
+            logger.error("Ошибка обновления inbound: %s", response.text)
+            return False
+        except Exception as e:
+            logger.error("Ошибка обновления inbound: %s", str(e))
+            return False
 
     def create_user(self, remark, traffic_gb=40, expire_days=30):
+        """Создать нового пользователя"""
         client_id = str(uuid.uuid4())
+        expire_seconds = expire_days * 86400
+        expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp()) * 1000
+
         data = {
             "up": 0,
             "down": 0,
-            "total": traffic_gb * 1024 ** 3,
+            "total": traffic_gb * 1073741824,  # 1 GB = 1073741824 bytes
             "remark": remark,
             "enable": True,
-            "expiryTime": expire_days * 86400,
-            "protocol": "vless",  # Или "vmess"
+            "expiryTime": expire_timestamp,
+            "protocol": "vless",
             "settings": json.dumps({
                 "clients": [{
                     "id": client_id,
-                    "flow": "xtls-rprx-vision"  # Только для VLESS
+                    "flow": "xtls-rprx-vision",
+                    "email": f"{remark}@vpn.com",
+                    "limitIp": 0,
+                    "totalGB": traffic_gb,
+                    "expiryTime": expire_timestamp
                 }],
                 "decryption": "none"
             }),
             "streamSettings": json.dumps({
                 "network": "tcp",
-                "security": "tls",  # Используем TLS вместо Reality
+                "security": "tls",
                 "tlsSettings": {
                     "serverName": "divan4ikbmstu.online",
                     "certificates": [{
@@ -51,19 +130,70 @@ class XUIAPI:
                     }]
                 }
             }),
-            "sniffing": '{"enabled":true,"destOverride":["http","tls"]}'
+            "sniffing": json.dumps({
+                "enabled": True,
+                "destOverride": ["http", "tls"]
+            })
         }
-        response = requests.post(
-            f"{self.panel_url}/xui/inbound/add",
-            data=data,
-            cookies=self.cookies
-        )
-        return client_id if response.status_code == 200 else None
+
+        if self.create_inbound(data):
+            return client_id
+        return None
 
     def update_user(self, uuid, traffic_gb=None, expire_days=None):
-        # В реальной реализации нужно получить текущие настройки и обновить
-        print(f"Обновление пользователя {uuid}: traffic={traffic_gb}GB, days={expire_days}")
-        return True
+        """Обновить пользователя"""
+        inbounds = self.get_inbounds()
+        for inbound in inbounds:
+            clients = json.loads(inbound.get('settings', '{}')).get('clients', [])
+            for client in clients:
+                if client.get('id') == uuid:
+                    # Нашли нужного пользователя
+                    inbound_id = inbound['id']
+
+                    # Обновляем параметры
+                    update_data = {
+                        "id": inbound_id,
+                        "up": inbound['up'],
+                        "down": inbound['down'],
+                        "remark": inbound['remark'],
+                        "enable": inbound['enable'],
+                        "protocol": inbound['protocol'],
+                        "settings": inbound['settings'],
+                        "streamSettings": inbound['streamSettings'],
+                        "sniffing": inbound['sniffing']
+                    }
+
+                    # Обновляем трафик
+                    if traffic_gb is not None:
+                        update_data["total"] = traffic_gb * 1073741824
+                        # Обновляем лимит в клиенте
+                        clients = json.loads(inbound['settings']).get('clients', [])
+                        for client in clients:
+                            if client['id'] == uuid:
+                                client['totalGB'] = traffic_gb
+                        update_data["settings"] = json.dumps({
+                            "clients": clients,
+                            "decryption": "none"
+                        })
+
+                    # Обновляем срок действия
+                    if expire_days is not None:
+                        expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp()) * 1000
+                        update_data["expiryTime"] = expire_timestamp
+                        # Обновляем срок в клиенте
+                        clients = json.loads(update_data["settings"]).get('clients', [])
+                        for client in clients:
+                            if client['id'] == uuid:
+                                client['expiryTime'] = expire_timestamp
+                        update_data["settings"] = json.dumps({
+                            "clients": clients,
+                            "decryption": "none"
+                        })
+
+                    return self.update_inbound(inbound_id, update_data)
+
+        logger.error("Пользователь с UUID %s не найден", uuid)
+        return False
 
     def generate_config(self, uuid):
         return (
@@ -74,34 +204,31 @@ class XUIAPI:
         )
 
     def get_server_stats(self):
-        # Заглушка для статистики сервера
-        return {
-            'cpu': 15.7,
-            'ram': 34.2,
-            'upload': 24.8,
-            'download': 56.3
-        }
-
-    def check_connection(self):
-        """Проверка работоспособности VPN"""
+        """Получить статистику сервера"""
         try:
-            # Проверка открытых портов
-            port_check = os.system("nc -zv localhost 443 > /dev/null 2>&1")
-            if port_check != 0:
-                return "Порт 443 не открыт"
+            # Получаем системную статистику
+            cpu_percent = psutil.cpu_percent()
+            ram = psutil.virtual_memory()
+            net = psutil.net_io_counters()
 
-            # Проверка сертификата
-            cert_check = os.system(
-                f"openssl s_client -connect localhost:443 -servername {self.domain} < /dev/null 2>&1 | openssl x509 -noout -dates")
-            if "notBefore" not in cert_check:
-                return "Ошибка сертификата"
+            # Получаем количество активных подключений из X-UI
+            inbounds = self.get_inbounds()
+            connections = 0
+            for inbound in inbounds:
+                connections += inbound.get('listen', '').count('->')  # Простой способ подсчета
 
-            # Проверка маршрутизации
-            route_check = os.popen("sysctl net.ipv4.ip_forward").read().strip()
-            if "net.ipv4.ip_forward = 1" not in route_check:
-                return "IP forwarding отключен"
-
-            return "Все проверки пройдены успешно"
-
-        except Exception as e:
-            return f"Ошибка проверки: {str(e)}"
+            return {
+                'cpu': cpu_percent,
+                'ram': ram.percent,
+                'upload': net.bytes_sent / (1024 ** 3),
+                'download': net.bytes_recv / (1024 ** 3),
+                'connections': connections
+            }
+        except:
+            return {
+                'cpu': 0,
+                'ram': 0,
+                'upload': 0,
+                'download': 0,
+                'connections': 0
+            }
