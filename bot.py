@@ -10,7 +10,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     filters,
-    ContextTypes
+    ContextTypes,
+    ConversationHandler
 )
 import xui_api
 from database import Database
@@ -29,6 +30,9 @@ with open('config.json') as f:
 # Инициализация базы данных и X-UI API
 db = Database('vpn_bot.db')
 xui = xui_api.XUIAPI(config['XUI_PANEL_URL'], config['XUI_USERNAME'], config['XUI_PASSWORD'])
+
+# Состояния для ConversationHandler
+SET_TRAFFIC, SET_DAYS = range(2)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -86,22 +90,31 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔄 Продлить подписку", callback_data="renew")],
         [InlineKeyboardButton("📊 Моя статистика", callback_data="stats")],
-        [InlineKeyboardButton("🆘 Помощь", callback_data="help")]
+        [InlineKeyboardButton("🆘 Помощь", callback_data="help_menu")]
     ]
 
     # Кнопка администратора, если пользователь - админ
     if str(user_id) in config['ADMIN_IDS']:
-        keyboard.append([InlineKeyboardButton("👑 Админ-панель", callback_data="admin_panel")])
+        keyboard.append([InlineKeyboardButton("👑 Админ-панель", callback_data="admin_menu")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(
-        f"👋 Привет, {update.effective_user.first_name}!\n\n"
-        f"• Осталось дней: {remaining_days}\n"
-        f"• Осталось трафика: {remaining_traffic_gb} ГБ\n\n"
-        "Выберите действие:",
-        reply_markup=reply_markup
-    )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            f"👋 Привет, {update.effective_user.first_name}!\n\n"
+            f"• Осталось дней: {remaining_days}\n"
+            f"• Осталось трафика: {remaining_traffic_gb} ГБ\n\n"
+            "Выберите действие:",
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            f"👋 Привет, {update.effective_user.first_name}!\n\n"
+            f"• Осталось дней: {remaining_days}\n"
+            f"• Осталось трафика: {remaining_traffic_gb} ГБ\n\n"
+            "Выберите действие:",
+            reply_markup=reply_markup
+        )
 
 
 async def renew_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,7 +123,7 @@ async def renew_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = [
         [InlineKeyboardButton("+30 дней +40 ГБ", callback_data="renew_basic")],
-        [InlineKeyboardButton("Назад", callback_data="back")]
+        [InlineKeyboardButton("Назад", callback_data="back_menu")]
     ]
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -167,19 +180,21 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
     remaining_days = (expire_date - datetime.now()).days
-    remaining_traffic_gb = (user_data['traffic_limit'] - user_data['traffic_used']) // (1024 ** 3)
+    remaining_traffic_gb = (user_data['traffic_limit'] - user_data['traffic_used']) // (1024 ** 3))
 
     await query.edit_message_text(
-        f"📊 Ваша статистика:\n\n"
-        f"• Имя пользователя: @{user_data['username']}\n"
-        f"• Дата регистрации: {user_data['created_at']}\n"
-        f"• Окончание подписки: {expire_date.strftime('%d.%m.%Y')} ({remaining_days} дн.)\n"
-        f"• Трафик: {user_data['traffic_used'] // (1024 ** 3)}/{user_data['traffic_limit'] // (1024 ** 3)} ГБ\n"
-        f"• Статус: {'Активен' if user_data['is_active'] else 'Заблокирован'}"
-    )
+    f"📊 Ваша статистика:\n\n"
+    f"• Имя пользователя: @{user_data['username']}\n"
+    f"• Дата регистрации: {user_data['created_at']}\n"
+    f"• Окончание подписки: {expire_date.strftime('%d.%m.%Y')} ({remaining_days} дн.)\n"
+    f"• Трафик: {user_data['traffic_used'] // (1024 ** 3)}/{user_data['traffic_limit'] // (1024 ** 3)} ГБ\n"
+    f"• Статус: {'Активен' if user_data['is_active'] else 'Заблокирован'}"
 
+)
 
-async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async
+
+def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
@@ -188,7 +203,7 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💻 Windows", callback_data="help_windows")],
         [InlineKeyboardButton("🍎 iOS", callback_data="help_ios")],
         [InlineKeyboardButton("🐧 Linux/Mac", callback_data="help_linux")],
-        [InlineKeyboardButton("Назад", callback_data="back")]
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_menu")]
     ]
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -205,18 +220,83 @@ async def help_android(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     await query.edit_message_text(
-        "📱 Инструкция для Android:\n\n"
-        "1. Установите приложение Nekobox из Play Market\n"
-        "2. Откройте приложение и нажмите ➕ в верхнем правом углу\n"
-        "3. Выберите 'Импортировать из буфера обмена'\n"
-        "4. Вернитесь в бота и скопируйте ваш конфиг\n"
+        "📱 <b>Инструкция для Android:</b>\n\n"
+        "1. Установите <b>Nekobox</b> из Play Market:\n"
+        "   <a href='https://play.google.com/store/apps/details?id=com.yakovlev.v2ray'>Скачать Nekobox</a>\n\n"
+        "2. Откройте приложение и нажмите <b>+</b> в верхнем правом углу\n"
+        "3. Выберите <b>'Импортировать из буфера обмена'</b>\n"
+        "4. Вернитесь в бота и скопируйте ваш конфиг (команда /start)\n"
         "5. Приложение автоматически добавит конфигурацию\n"
         "6. Нажмите на переключатель для подключения\n\n"
-        "Готово! Ваше соединение защищено."
+        "<b>Важно!</b> Если подключение есть, но трафик не идет:\n"
+        "- Проверьте, что время на устройстве установлено правильно\n"
+        "- Попробуйте переключить тип сети (WiFi/4G)\n"
+        "- Перезапустите приложение",
+        parse_mode="HTML",
+        disable_web_page_preview=True
     )
 
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_windows(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "💻 <b>Инструкция для Windows:</b>\n\n"
+        "1. Скачайте <b>Nekoray</b>:\n"
+        "   <a href='https://github.com/MatsuriDayo/nekoray/releases'>Скачать Nekoray</a>\n\n"
+        "2. Распакуйте архив и запустите <b>nekoray.exe</b>\n"
+        "3. В главном окне нажмите <b>Add</b> ➕\n"
+        "4. Выберите <b>'From Clipboard'</b>\n"
+        "5. Вернитесь в бота и скопируйте ваш конфиг (команда /start)\n"
+        "6. Нажмите <b>OK</b>, затем правой кнопкой на конфиге → <b>Start</b>\n\n"
+        "<b>Совет:</b> Для автоматического запуска добавьте Nekoray в автозагрузку",
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+
+
+async def help_ios(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "🍎 <b>Инструкция для iOS:</b>\n\n"
+        "1. Требуется <b>иностранный Apple ID</b> (например, США)\n"
+        "2. Установите <b>Shadowrocket</b> из AppStore:\n"
+        "   <a href='https://apps.apple.com/us/app/shadowrocket/id932747118'>Скачать Shadowrocket</a>\n\n"
+        "3. Откройте приложение и нажмите <b>+</b> в правом верхнем углу\n"
+        "4. Выберите <b>'Subscribe'</b>\n"
+        "5. Вставьте ссылку из бота (команда /start)\n"
+        "6. Активируйте подключение переключателем\n\n"
+        "<b>Важно!</b> После подключения:\n"
+        "- Зайдите в настройки Shadowrocket → Local DNS → выберите 'Disable'\n"
+        "- Включите 'Bypass LAN' в основных настройках",
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+
+
+async def help_linux(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "🐧 <b>Инструкция для Linux/Mac:</b>\n\n"
+        "1. Установите <b>Qv2ray</b>:\n"
+        "   <a href='https://github.com/Qv2ray/Qv2ray/releases'>Скачать Qv2ray</a>\n\n"
+        "2. Запустите приложение и нажмите <b>Add</b> ➕\n"
+        "3. Выберите <b>'From Clipboard'</b>\n"
+        "4. Вернитесь в бота и скопируйте ваш конфиг (команда /start)\n"
+        "5. Выберите конфиг и нажмите <b>Connect</b>\n\n"
+        "<b>Для MacOS:</b> Вместо Qv2ray можно использовать <b>V2RayU</b>:\n"
+        "<a href='https://github.com/yanue/V2rayU/releases'>Скачать V2RayU</a>",
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+
+
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
@@ -228,7 +308,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("👥 Список пользователей", callback_data="list_users")],
         [InlineKeyboardButton("📊 Статистика сервера", callback_data="server_stats")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back")]
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_menu")]
     ]
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -261,7 +341,7 @@ async def server_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # Получаем статистику сервера (заглушка)
+    # Получаем статистику сервера
     stats = xui.get_server_stats()
 
     await query.edit_message_text(
@@ -269,7 +349,8 @@ async def server_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Пользователей: {len(db.get_all_users())}\n"
         f"• Загрузка CPU: {stats['cpu']}%\n"
         f"• Использовано RAM: {stats['ram']}%\n"
-        f"• Трафик: ↑{stats['upload']}GB ↓{stats['download']}GB"
+        f"• Трафик: ↑{stats['upload']:.2f}GB ↓{stats['download']:.2f}GB\n\n"
+        f"• Активные подключения: {stats['connections']}"
     )
 
 
@@ -279,25 +360,64 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update, context)
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /help"""
+    keyboard = [
+        [InlineKeyboardButton("📱 Android", callback_data="help_android")],
+        [InlineKeyboardButton("💻 Windows", callback_data="help_windows")],
+        [InlineKeyboardButton("🍎 iOS", callback_data="help_ios")],
+        [InlineKeyboardButton("🐧 Linux/Mac", callback_data="help_linux")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "📚 Инструкции по подключению:\n\n"
+        "Выберите ваше устройство:",
+        reply_markup=reply_markup
+    )
+
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /admin"""
+    user_id = update.effective_user.id
+    if str(user_id) not in config['ADMIN_IDS']:
+        await update.message.reply_text("⛔ У вас нет прав доступа!")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("👥 Список пользователей", callback_data="list_users")],
+        [InlineKeyboardButton("📊 Статистика сервера", callback_data="server_stats")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "⚙️ Панель администратора:",
+        reply_markup=reply_markup
+    )
+
+
 def main():
     # Создаем приложение
     application = ApplicationBuilder().token(config['BOT_TOKEN']).build()
 
-    # Регистрируем обработчики
+    # Регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", show_help))
-    application.add_handler(CommandHandler("admin", admin_panel))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("admin", admin_command))
 
     # Обработчики callback-запросов
     application.add_handler(CallbackQueryHandler(renew_subscription, pattern="^renew$"))
     application.add_handler(CallbackQueryHandler(renew_basic, pattern="^renew_basic$"))
     application.add_handler(CallbackQueryHandler(show_stats, pattern="^stats$"))
-    application.add_handler(CallbackQueryHandler(show_help, pattern="^help$"))
-    application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+    application.add_handler(CallbackQueryHandler(show_help_menu, pattern="^help_menu$"))
+    application.add_handler(CallbackQueryHandler(admin_menu, pattern="^admin_menu$"))
     application.add_handler(CallbackQueryHandler(list_users, pattern="^list_users$"))
     application.add_handler(CallbackQueryHandler(server_stats, pattern="^server_stats$"))
     application.add_handler(CallbackQueryHandler(help_android, pattern="^help_android$"))
-    application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back$"))
+    application.add_handler(CallbackQueryHandler(help_windows, pattern="^help_windows$"))
+    application.add_handler(CallbackQueryHandler(help_ios, pattern="^help_ios$"))
+    application.add_handler(CallbackQueryHandler(help_linux, pattern="^help_linux$"))
+    application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_menu$"))
 
     # Запускаем бота
     application.run_polling()
