@@ -81,3 +81,27 @@ class XUIAPI:
             'upload': 24.8,
             'download': 56.3
         }
+
+    def check_connection(self):
+        """Проверка работоспособности VPN"""
+        try:
+            # Проверка открытых портов
+            port_check = os.system("nc -zv localhost 443 > /dev/null 2>&1")
+            if port_check != 0:
+                return "Порт 443 не открыт"
+
+            # Проверка сертификата
+            cert_check = os.system(
+                f"openssl s_client -connect localhost:443 -servername {self.domain} < /dev/null 2>&1 | openssl x509 -noout -dates")
+            if "notBefore" not in cert_check:
+                return "Ошибка сертификата"
+
+            # Проверка маршрутизации
+            route_check = os.popen("sysctl net.ipv4.ip_forward").read().strip()
+            if "net.ipv4.ip_forward = 1" not in route_check:
+                return "IP forwarding отключен"
+
+            return "Все проверки пройдены успешно"
+
+        except Exception as e:
+            return f"Ошибка проверки: {str(e)}"

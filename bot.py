@@ -295,6 +295,12 @@ async def help_linux(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disable_web_page_preview=True
     )
 
+async def check_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка состояния сервера"""
+    result = xui.check_connection()
+    await update.message.reply_text(
+        f"🔍 Результаты проверки сервера:\n\n{result}"
+    )
 
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
