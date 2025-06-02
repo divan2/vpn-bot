@@ -39,6 +39,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
 
+
+
+
+
+
+    user = update.effective_user
+    user_id = user.id
+
+    # Проверяем существование пользователя
+    if not db.user_exists(user_id):
+        # Создаем нового пользователя
+        logger.info(f"Создание пользователя для user_id={user_id}")
+        uuid = xui.create_user(
+            remark=f"user_{user_id}",
+            traffic_gb=config['TRIAL_TRAFFIC_GB'],
+            expire_days=config['TRIAL_DAYS']
+        )
+
+        if not uuid:
+            logger.error("Не удалось создать пользователя в X-UI")
+            await update.message.reply_text(
+                "❌ Произошла ошибка при создании вашего профиля. Попробуйте позже."
+            )
+            return
+
+        logger.info(f"Пользователь создан с UUID={uuid}")
+
+        db.create_user(
+            user_id=user_id,
+            username=user.username,
+            uuid=uuid,
+            traffic_limit=config['TRIAL_TRAFFIC_GB'] * 1024 ** 3,
+            expire_date=(datetime.now() + timedelta(days=config['TRIAL_DAYS'])).strftime('%Y-%m-%d')
+        )
+
+
+
+
+
     # Проверяем существование пользователя
     if not db.user_exists(user_id):
         # Создаем нового пользователя

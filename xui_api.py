@@ -2,7 +2,8 @@ import requests
 import json
 import uuid
 import logging
-from datetime import datetime
+import psutil
+from datetime import datetime, timedelta  # Добавлен импорт timedelta
 
 # Настройка логгера
 logger = logging.getLogger(__name__)
@@ -36,7 +37,8 @@ class XUIAPI:
     def get_inbounds(self):
         """Получить список всех inbounds"""
         if not self.cookies:
-            self._login()
+            if not self._login():
+                return []
 
         try:
             response = requests.get(
@@ -55,7 +57,8 @@ class XUIAPI:
     def create_inbound(self, data):
         """Создать новый inbound"""
         if not self.cookies:
-            self._login()
+            if not self._login():
+                return False
 
         try:
             response = requests.post(
@@ -76,7 +79,8 @@ class XUIAPI:
     def update_inbound(self, inbound_id, data):
         """Обновить существующий inbound"""
         if not self.cookies:
-            self._login()
+            if not self._login():
+                return False
 
         try:
             response = requests.post(
@@ -97,7 +101,6 @@ class XUIAPI:
     def create_user(self, remark, traffic_gb=40, expire_days=30):
         """Создать нового пользователя"""
         client_id = str(uuid.uuid4())
-        expire_seconds = expire_days * 86400
         expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp()) * 1000
 
         data = {
@@ -144,7 +147,8 @@ class XUIAPI:
         """Обновить пользователя"""
         inbounds = self.get_inbounds()
         for inbound in inbounds:
-            clients = json.loads(inbound.get('settings', '{}')).get('clients', [])
+            settings = json.loads(inbound.get('settings', '{}'))
+            clients = settings.get('clients', [])
             for client in clients:
                 if client.get('id') == uuid:
                     # Нашли нужного пользователя
@@ -167,7 +171,6 @@ class XUIAPI:
                     if traffic_gb is not None:
                         update_data["total"] = traffic_gb * 1073741824
                         # Обновляем лимит в клиенте
-                        clients = json.loads(inbound['settings']).get('clients', [])
                         for client in clients:
                             if client['id'] == uuid:
                                 client['totalGB'] = traffic_gb
@@ -181,7 +184,6 @@ class XUIAPI:
                         expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp()) * 1000
                         update_data["expiryTime"] = expire_timestamp
                         # Обновляем срок в клиенте
-                        clients = json.loads(update_data["settings"]).get('clients', [])
                         for client in clients:
                             if client['id'] == uuid:
                                 client['expiryTime'] = expire_timestamp
@@ -211,20 +213,15 @@ class XUIAPI:
             ram = psutil.virtual_memory()
             net = psutil.net_io_counters()
 
-            # Получаем количество активных подключений из X-UI
-            inbounds = self.get_inbounds()
-            connections = 0
-            for inbound in inbounds:
-                connections += inbound.get('listen', '').count('->')  # Простой способ подсчета
-
             return {
                 'cpu': cpu_percent,
                 'ram': ram.percent,
                 'upload': net.bytes_sent / (1024 ** 3),
                 'download': net.bytes_recv / (1024 ** 3),
-                'connections': connections
+                'connections': len(self.get_inbounds())  # Простой подсчёт
             }
-        except:
+        except Exception as e:
+            logger.error("Ошибка получения статистики: %s", str(e))
             return {
                 'cpu': 0,
                 'ram': 0,
