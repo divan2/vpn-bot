@@ -15,183 +15,102 @@ class XUIAPI:
         self.username = username
         self.password = password
         self.cookies = None
+        self.jwt_token = None
         self._login()
 
     def _login(self):
         try:
+            url = f"{self.panel_url}/login"
+            data = {"username": self.username, "password": self.password}
             response = requests.post(
-                f"{self.panel_url}/login",
-                json={"username": self.username, "password": self.password},
+                url,
+                json=data,
                 timeout=10,
-                verify=False  # Для самоподписанных сертификатов
+                verify=False
             )
-            if response.status_code == 200 and response.json().get('success'):
-                self.cookies = response.cookies
-                self.jwt_token = response.json().get('token', '')
-                return True
-            return False
+
+            # Проверка на пустой ответ
+            if not response.text.strip():
+                logger.error("Login error: Empty response from server")
+                return False
+
+            try:
+                result = response.json()
+                if response.status_code == 200 and result.get('success'):
+                    self.cookies = response.cookies
+                    self.jwt_token = result.get('token', '')
+                    return True
+                logger.error(f"Login failed: {result.get('msg', 'Unknown error')}")
+                return False
+            except json.JSONDecodeError:
+                logger.error(f"Login JSON parse error: {response.text}")
+                return False
         except Exception as e:
             logger.error(f"Login error: {str(e)}")
             return False
 
-    def create_user(self, remark, traffic_gb=40, expire_days=30):
-        client_id = str(uuid.uuid4())
-        expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp() * 1000
-
-        data = {
-            "up": 0,
-            "down": 0,
-            "total": traffic_gb * 1073741824,
-            "remark": remark,
-            "enable": True,
-            "expiryTime": expire_timestamp,
-            "protocol": "vless",
-            "settings": json.dumps({
-                "clients": [{
-                    "id": client_id,
-                    "flow": "xtls-rprx-vision",
-                    "email": f"{remark}@vpn.com",
-                    "limitIp": 0,
-                    "totalGB": traffic_gb,
-                    "expiryTime": expire_timestamp
-                }],
-                "decryption": "none"
-            }),
-            "streamSettings": json.dumps({
-                "network": "tcp",
-                "security": "tls",
-                "tlsSettings": {
-                    "serverName": "your-domain.com",
-                    "certificates": [{
-                        "certificateFile": "/path/to/cert.pem",
-                        "keyFile": "/path/to/key.pem"
-                    }]
-                }
-            }),
-            "sniffing": json.dumps({
-                "enabled": True,
-                "destOverride": ["http", "tls"]
-            }),
-            "listen": "",
-            "port": 443,
-            "tag": f"inbound-{uuid.uuid4()}"
-        }
-
+    def _request(self, method, endpoint, data=None, params=None):
+        """Универсальный метод для запросов к API"""
         try:
-            response = requests.post(
-                f"{self.panel_url}/xui/inbound/add",
+            url = f"{self.panel_url}{endpoint}"
+            headers = {}
+            if self.jwt_token:
+                headers["Authorization"] = f"Bearer {self.jwt_token}"
+
+            response = method(
+                url,
                 json=data,
-                headers={"Authorization": f"Bearer {self.jwt_token}"} if self.jwt_token else {},
+                params=params,
                 cookies=self.cookies,
+                headers=headers,
                 timeout=15,
                 verify=False
             )
-            if response.status_code == 200 and response.json().get('success'):
-                return client_id
-            return None
+
+            # Проверка на пустой ответ
+            if not response.text.strip():
+                return {'success': True, 'msg': 'Empty response'}
+
+            try:
+                return response.json()
+            except json.JSONDecodeError:
+                logger.error(f"JSON parse error for {url}: {response.text}")
+                return {'success': False, 'msg': 'Invalid JSON response'}
         except Exception as e:
-            logger.error(f"Create user error: {str(e)}")
-            return None
-
-    def generate_config(self, uuid):
-        return (
-            f"vless://{uuid}@your-domain.com:443?type=tcp&security=tls&flow=xtls-rprx-vision"
-            f"&encryption=none&headerType=none&fp=chrome#VPN-Config"
-        )
-
-    def _ensure_auth(self):
-        if not self.cookies:
-            print("Сессия устарела, повторная авторизация")
-            self._login()
+            logger.error(f"Request error: {str(e)}")
+            return {'success': False, 'msg': str(e)}
 
     def get_inbounds(self):
         """Получить список всех inbounds"""
-        self._ensure_auth()
-        print("Получение списка inbounds...")
-
-        try:
-            response = requests.get(
-                f"{self.panel_url}/xui/inbound/list",
-                cookies=self.cookies,
-                timeout=10
-            )
-            print(f"Статус получения inbounds: {response.status_code}")
-
-            if response.status_code == 200:
-                return response.json().get('data', [])
-            print(f"Ошибка получения inbounds: {response.text}")
-            return []
-        except Exception as e:
-            print(f"Ошибка получения inbounds: {str(e)}")
-            return []
+        result = self._request(requests.get, "/xui/inbound/list")
+        return result.get('obj', []) if result.get('success') else []
 
     def create_inbound(self, data):
         """Создать новый inbound"""
-        self._ensure_auth()
-        print(f"Создание нового inbound: {data['remark']}")
-
-        try:
-            response = requests.post(
-                f"{self.panel_url}/xui/inbound/add",
-                data=data,
-                cookies=self.cookies,
-                timeout=15
-            )
-            print(f"Статус создания: {response.status_code}, ответ: {response.text}")
-
-            if response.status_code == 200:
-                print("Inbound успешно создан")
-                return True
-            print("Ошибка создания inbound")
-            return False
-        except Exception as e:
-            print(f"Ошибка создания inbound: {str(e)}")
-            return False
+        result = self._request(requests.post, "/xui/inbound/add", data=data)
+        return result.get('success', False)
 
     def update_inbound(self, inbound_id, data):
         """Обновить существующий inbound"""
-        self._ensure_auth()
-        print(f"Обновление inbound: {inbound_id}")
-
-        try:
-            response = requests.post(
-                f"{self.panel_url}/xui/inbound/update/{inbound_id}",
-                data=data,
-                cookies=self.cookies,
-                timeout=15
-            )
-            print(f"Статус обновления: {response.status_code}, ответ: {response.text}")
-
-            if response.status_code == 200:
-                print("Inbound успешно обновлен")
-                return True
-            print("Ошибка обновления inbound")
-            return False
-        except Exception as e:
-            print(f"Ошибка обновления inbound: {str(e)}")
-            return False
+        result = self._request(
+            requests.post,
+            f"/xui/inbound/update/{inbound_id}",
+            data=data
+        )
+        return result.get('success', False)
 
     def del_inbound(self, inbound_id):
         """Удалить inbound"""
-        self._ensure_auth()
-        print(f"Удаление inbound: {inbound_id}")
-        try:
-            response = requests.post(
-                f"{self.panel_url}/xui/inbound/del/{inbound_id}",
-                cookies=self.cookies,
-                timeout=10
-            )
-            print(f"Статус удаления: {response.status_code}, ответ: {response.text}")
-            return response.status_code == 200
-        except Exception as e:
-            print(f"Ошибка удаления: {str(e)}")
-            return False
+        result = self._request(
+            requests.post,
+            f"/xui/inbound/del/{inbound_id}"
+        )
+        return result.get('success', False)
 
     def create_user(self, remark, traffic_gb=40, expire_days=30):
         """Создать нового пользователя"""
-        print(f"Создание пользователя: {remark}")
         client_id = str(uuid.uuid4())
-        expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp()) * 1000
+        expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp() * 1000
 
         data = {
             "up": 0,
@@ -201,7 +120,7 @@ class XUIAPI:
             "enable": True,
             "expiryTime": expire_timestamp,
             "protocol": "vless",
-            "settings": json.dumps({
+            "settings": {
                 "clients": [{
                     "id": client_id,
                     "flow": "xtls-rprx-vision",
@@ -211,8 +130,8 @@ class XUIAPI:
                     "expiryTime": expire_timestamp
                 }],
                 "decryption": "none"
-            }),
-            "streamSettings": json.dumps({
+            },
+            "streamSettings": {
                 "network": "tcp",
                 "security": "tls",
                 "tlsSettings": {
@@ -222,87 +141,64 @@ class XUIAPI:
                         "keyFile": "/etc/letsencrypt/live/divan4ikbmstu.online/privkey.pem"
                     }]
                 }
-            }),
-            "sniffing": json.dumps({
+            },
+            "sniffing": {
                 "enabled": True,
                 "destOverride": ["http", "tls"]
-            })
+            }
         }
 
         if self.create_inbound(data):
-            print(f"Пользователь создан: {client_id}")
             return client_id
-        print("Ошибка создания пользователя")
         return None
 
     def update_user(self, uuid, traffic_gb=None, expire_days=None):
         """Обновить пользователя"""
-        print(f"Обновление пользователя: {uuid}")
         inbounds = self.get_inbounds()
         for inbound in inbounds:
-            settings = json.loads(inbound.get('settings', '{}'))
-            clients = settings.get('clients', [])
+            clients = inbound.get('settings', {}).get('clients', [])
             for client in clients:
                 if client.get('id') == uuid:
                     # Нашли нужного пользователя
                     inbound_id = inbound['id']
-                    print(f"Найден пользователь для обновления, inbound_id={inbound_id}")
 
-                    # Обновляем параметры
-                    update_data = {
-                        "id": inbound_id,
-                        "up": inbound['up'],
-                        "down": inbound['down'],
-                        "remark": inbound['remark'],
-                        "enable": inbound['enable'],
-                        "protocol": inbound['protocol'],
-                        "settings": inbound['settings'],
-                        "streamSettings": inbound['streamSettings'],
-                        "sniffing": inbound['sniffing']
-                    }
+                    # Копируем текущие данные
+                    update_data = inbound.copy()
+
+                    # Удаляем ненужные поля
+                    for field in ['id', 'inbound_id', 'streamSettings', 'sniffing']:
+                        update_data.pop(field, None)
 
                     # Обновляем трафик
                     if traffic_gb is not None:
                         update_data["total"] = traffic_gb * 1073741824
-                        # Обновляем лимит в клиенте
                         for c in clients:
                             if c['id'] == uuid:
                                 c['totalGB'] = traffic_gb
-                        update_data["settings"] = json.dumps({
-                            "clients": clients,
-                            "decryption": "none"
-                        })
 
                     # Обновляем срок действия
                     if expire_days is not None:
-                        expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp()) * 1000
+                        expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp() * 1000
                         update_data["expiryTime"] = expire_timestamp
-                        # Обновляем срок в клиенте
                         for c in clients:
-                            if c['id'] == uuid:
-                                c['expiryTime'] = expire_timestamp
-                        update_data["settings"] = json.dumps({
-                            "clients": clients,
-                            "decryption": "none"
-                        })
+                            if
+                        c['id'] == uuid:
+                        c['expiryTime'] = expire_timestamp
+
+                        # Обновляем клиентов
+                        update_data["settings"]["clients"] = clients
 
                     return self.update_inbound(inbound_id, update_data)
-
-        print(f"Пользователь с UUID {uuid} не найден")
         return False
 
     def delete_user(self, uuid):
         """Удалить пользователя по UUID"""
-        print(f"Поиск пользователя для удаления: {uuid}")
         inbounds = self.get_inbounds()
         for inbound in inbounds:
-            settings = json.loads(inbound.get('settings', '{}'))
-            clients = settings.get('clients', [])
+            clients = inbound.get('settings', {}).get('clients', [])
             for client in clients:
                 if client.get('id') == uuid:
-                    print(f"Найден пользователь для удаления, inbound_id={inbound['id']}")
                     return self.del_inbound(inbound['id'])
-        print(f"Пользователь {uuid} не найден для удаления")
         return False
 
     def generate_config(self, uuid):
@@ -315,22 +211,30 @@ class XUIAPI:
 
     def get_server_stats(self):
         """Получить статистику сервера"""
-        print("Получение статистики сервера...")
         try:
             # Получаем системную статистику
             cpu_percent = psutil.cpu_percent()
             ram = psutil.virtual_memory()
             net = psutil.net_io_counters()
 
+            # Получаем статистику трафика из X-UI
+            inbounds = self.get_inbounds()
+            total_up = 0
+            total_down = 0
+
+            for inbound in inbounds:
+                total_up += inbound.get('up', 0)
+                total_down += inbound.get('down', 0)
+
             return {
                 'cpu': cpu_percent,
                 'ram': ram.percent,
-                'upload': net.bytes_sent / (1024 ** 3),
-                'download': net.bytes_recv / (1024 ** 3),
-                'connections': len(self.get_inbounds())  # Простой подсчёт
+                'upload': total_up / (1024 ** 3),
+                'download': total_down / (1024 ** 3),
+                'connections': len(inbounds)
             }
         except Exception as e:
-            print(f"Ошибка получения статистики: {str(e)}")
+            logger.error(f"Server stats error: {str(e)}")
             return {
                 'cpu': 0,
                 'ram': 0,
@@ -338,3 +242,7 @@ class XUIAPI:
                 'download': 0,
                 'connections': 0
             }
+
+    def check_connection(self):
+        """Проверка соединения с X-UI"""
+        return self._login() and len(self.get_inbounds()) >= 0
