@@ -114,50 +114,39 @@ class XUIAPI:
         )
 
     def create_user(self, remark, traffic_gb=40, expire_days=30):
-        """Создать нового пользователя"""
         client_id = str(uuid.uuid4())
         expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp() * 1000)
 
-        data = {
-            "up": 0,
-            "down": 0,
-            "total": traffic_gb * 1073741824,  # 1 GB = 1073741824 bytes
-            "remark": remark,
-            "enable": True,
-            "expiryTime": expire_timestamp,
-            "listen": "",
-            "port": 443,  # Обязательный параметр
-            "protocol": "vless",
-            "settings": {
-                "clients": [{
-                    "id": client_id,
-                    "flow": "xtls-rprx-vision",
-                    "email": f"{remark}@vpn.com",
-                    "limitIp": 0,
-                    "totalGB": traffic_gb,
-                    "expiryTime": expire_timestamp
-                }],
-                "decryption": "none"
-            },
-            "streamSettings": {
-                "network": "tcp",
-                "security": "tls",
-                "tlsSettings": {
-                    "serverName": "divan4ikbmstu.online",
-                    "certificates": [{
-                        "certificateFile": "/etc/letsencrypt/live/divan4ikbmstu.online/fullchain.pem",
-                        "keyFile": "/etc/letsencrypt/live/divan4ikbmstu.online/privkey.pem"
-                    }]
-                }
-            },
-            "sniffing": {
-                "enabled": True,
-                "destOverride": ["http", "tls"]
-            }
-        }
+        inbounds = self.get_inbounds()
+        if not inbounds:
+            logger.error("Нет доступных inboundов для добавления пользователя")
+            return None
 
-        result = self.create_inbound(data)
-        if result and result.get('success'):
+        # Копируем любой существующий inbound как шаблон
+        base_inbound = inbounds[0]
+        inbound_id = base_inbound.get('id')
+
+        clients = base_inbound.get('settings', {}).get('clients', [])
+        clients.append({
+            "id": client_id,
+            "flow": "xtls-rprx-vision",
+            "email": f"{remark}@vpn.com",
+            "limitIp": 0,
+            "totalGB": traffic_gb,
+            "expiryTime": expire_timestamp
+        })
+
+        base_inbound['settings']['clients'] = clients
+
+        # Обновим expiryTime на уровне inbound тоже (для X-UI совместимости)
+        base_inbound['expiryTime'] = expire_timestamp
+
+        # Удалим поля, которые нельзя отправлять обратно
+        base_inbound.pop('id', None)
+        base_inbound.pop('inbound_id', None)
+
+        result = self.create_inbound(base_inbound)
+        if result.get("success"):
             return client_id
 
         logger.error(f"Ошибка при создании пользователя: {result.get('msg', 'Неизвестная ошибка')}")
@@ -219,7 +208,7 @@ class XUIAPI:
 
     def generate_config(self, uuid):
         return (
-            f"vless://{uuid}@divan4ikbmstu.online:443?"
+            f"vless://{uuid}@divan4ikbmstu.online:444?"
             f"encryption=none&flow=xtls-rprx-vision&security=tls&"
             f"sni=divan4ikbmstu.online&fp=chrome&"
             f"type=tcp&headerType=none#{uuid[:8]}"
