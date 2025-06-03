@@ -38,86 +38,60 @@ SET_TRAFFIC, SET_DAYS = range(2)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
+    print(f"Обработка /start для user_id={user_id}")
 
-
-
-
-
-
-    user = update.effective_user
-    user_id = user.id
-
-    # Проверяем существование пользователя
     if not db.user_exists(user_id):
-        # Создаем нового пользователя
-        logger.info(f"Создание пользователя для user_id={user_id}")
-        uuid = xui.create_user(
-            remark=f"user_{user_id}",
-            traffic_gb=config['TRIAL_TRAFFIC_GB'],
-            expire_days=config['TRIAL_DAYS']
-        )
-
-        if not uuid:
-            logger.error("Не удалось создать пользователя в X-UI")
-            await update.message.reply_text(
-                "❌ Произошла ошибка при создании вашего профиля. Попробуйте позже."
+        print(f"Создание нового пользователя: {user_id}")
+        try:
+            uuid = xui.create_user(
+                remark=f"user_{user_id}",
+                traffic_gb=config['TRIAL_TRAFFIC_GB'],
+                expire_days=config['TRIAL_DAYS']
             )
-            return
 
-        logger.info(f"Пользователь создан с UUID={uuid}")
+            if not uuid:
+                print(f"Ошибка создания пользователя в X-UI: {user_id}")
+                await update.message.reply_text("❌ Ошибка при создании профиля. Попробуйте позже.")
+                return
 
-        db.create_user(
-            user_id=user_id,
-            username=user.username,
-            uuid=uuid,
-            traffic_limit=config['TRIAL_TRAFFIC_GB'] * 1024 ** 3,
-            expire_date=(datetime.now() + timedelta(days=config['TRIAL_DAYS'])).strftime('%Y-%m-%d')
-        )
+            print(f"Пользователь создан UUID={uuid}")
 
+            db.create_user(
+                user_id=user_id,
+                username=user.username,
+                uuid=uuid,
+                traffic_limit=config['TRIAL_TRAFFIC_GB'] * 1024 ** 3,
+                expire_date=(datetime.now() + timedelta(days=config['TRIAL_DAYS'])).strftime('%Y-%m-%d')
+            )
 
+            config_link = xui.generate_config(uuid)
+            print(f"Конфиг сгенерирован для {user_id}: {config_link[:50]}...")
 
-
-
-    # Проверяем существование пользователя
-    if not db.user_exists(user_id):
-        # Создаем нового пользователя
-        uuid = xui.create_user(
-            remark=f"user_{user_id}",
-            traffic_gb=config['TRIAL_TRAFFIC_GB'],
-            expire_days=config['TRIAL_DAYS']
-        )
-
-        db.create_user(
-            user_id=user_id,
-            username=user.username,
-            uuid=uuid,
-            traffic_limit=config['TRIAL_TRAFFIC_GB'] * 1024 ** 3,
-            expire_date=(datetime.now() + timedelta(days=config['TRIAL_DAYS'])).strftime('%Y-%m-%d')
-        )
-
-        await update.message.reply_text(
-            "🎉 Добро пожаловать! Вы получили пробный период:\n"
-            f"• {config['TRIAL_DAYS']} дней\n"
-            f"• {config['TRIAL_TRAFFIC_GB']} ГБ трафика\n\n"
-            "Ваша конфигурация генерируется..."
-        )
-
-        # Отправляем конфиг
-        config_link = xui.generate_config(uuid)
-        await update.message.reply_text(
-            f"🔑 Ваш конфиг:\n`{config_link}`\n\n"
-            "📚 Инструкции по установке: /help",
-            parse_mode="Markdown"
-        )
+            await update.message.reply_text(
+                "🎉 Добро пожаловать! Ваш пробный период:\n"
+                f"• {config['TRIAL_DAYS']} дней\n"
+                f"• {config['TRIAL_TRAFFIC_GB']} ГБ трафика\n\n"
+                f"🔑 Ваш конфиг:\n`{config_link}`\n\n"
+                "📚 Инструкции: /help",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"Критическая ошибка при создании пользователя: {str(e)}")
+            await update.message.reply_text("⚠️ Системная ошибка. Администратор уведомлен.")
     else:
-
-        # Пользователь уже существует
+        print(f"Пользователь уже существует: {user_id}")
         await show_main_menu(update, context)
 
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data = db.get_user(user_id)
+
+    # Проверка активности аккаунта
+    if not user_data['is_active']:
+        print(f"Попытка доступа к деактивированному аккаунту: {user_id}")
+        await update.message.reply_text("❌ Ваш аккаунт деактивирован")
+        return
 
     # Рассчитываем оставшиеся дни
     expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
@@ -182,6 +156,7 @@ async def renew_basic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
     user_data = db.get_user(user_id)
+    print(f"Продление подписки для: {user_id}")
 
     # Обновляем дату окончания
     expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
@@ -198,11 +173,16 @@ async def renew_basic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # Обновляем в X-UI
-    xui.update_user(
+    result = xui.update_user(
         uuid=user_data['uuid'],
         traffic_gb=new_traffic_limit // (1024 ** 3),
         expire_days=(new_expire_date - datetime.now()).days
     )
+
+    if not result:
+        print(f"Ошибка обновления пользователя в X-UI: {user_id}")
+        await query.edit_message_text("❌ Ошибка при продлении подписки")
+        return
 
     await query.edit_message_text(
         "✅ Подписка успешно продлена!\n\n"
@@ -223,14 +203,14 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remaining_traffic_gb = (user_data['traffic_limit'] - user_data['traffic_used']) // (1024 ** 3)
 
     await query.edit_message_text(
-    f"📊 Ваша статистика:\n\n"
-    f"• Имя пользователя: @{user_data['username']}\n"
-    f"• Дата регистрации: {user_data['created_at']}\n"
-    f"• Окончание подписки: {expire_date.strftime('%d.%m.%Y')} ({remaining_days} дн.)\n"
-    f"• Трафик: {user_data['traffic_used'] // (1024 ** 3)}/{user_data['traffic_limit'] // (1024 ** 3)} ГБ\n"
-    f"• Статус: {'Активен' if user_data['is_active'] else 'Заблокирован'}"
+        f"📊 Ваша статистика:\n\n"
+        f"• Имя пользователя: @{user_data['username']}\n"
+        f"• Дата регистрации: {user_data['created_at']}\n"
+        f"• Окончание подписки: {expire_date.strftime('%d.%m.%Y')} ({remaining_days} дн.)\n"
+        f"• Трафик: {user_data['traffic_used'] // (1024 ** 3)}/{user_data['traffic_limit'] // (1024 ** 3)} ГБ\n"
+        f"• Статус: {'Активен' if user_data['is_active'] else 'Заблокирован'}"
+    )
 
-)
 
 async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -257,6 +237,8 @@ async def help_android(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="help_menu")]]
+
     await query.edit_message_text(
         "📱 <b>Инструкция для Android:</b>\n\n"
         "1. Установите <b>Nekobox</b> из Play Market:\n"
@@ -271,13 +253,16 @@ async def help_android(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- Попробуйте переключить тип сети (WiFi/4G)\n"
         "- Перезапустите приложение",
         parse_mode="HTML",
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 async def help_windows(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="help_menu")]]
 
     await query.edit_message_text(
         "💻 <b>Инструкция для Windows:</b>\n\n"
@@ -290,13 +275,16 @@ async def help_windows(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "6. Нажмите <b>OK</b>, затем правой кнопкой на конфиге → <b>Start</b>\n\n"
         "<b>Совет:</b> Для автоматического запуска добавьте Nekoray в автозагрузку",
         parse_mode="HTML",
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 async def help_ios(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="help_menu")]]
 
     await query.edit_message_text(
         "🍎 <b>Инструкция для iOS:</b>\n\n"
@@ -311,13 +299,16 @@ async def help_ios(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- Зайдите в настройки Shadowrocket → Local DNS → выберите 'Disable'\n"
         "- Включите 'Bypass LAN' в основных настройках",
         parse_mode="HTML",
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 async def help_linux(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="help_menu")]]
 
     await query.edit_message_text(
         "🐧 <b>Инструкция для Linux/Mac:</b>\n\n"
@@ -330,8 +321,10 @@ async def help_linux(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>Для MacOS:</b> Вместо Qv2ray можно использовать <b>V2RayU</b>:\n"
         "<a href='https://github.com/yanue/V2rayU/releases'>Скачать V2RayU</a>",
         parse_mode="HTML",
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
 
 async def check_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Проверка состояния сервера"""
@@ -340,17 +333,20 @@ async def check_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔍 Результаты проверки сервера:\n\n{result}"
     )
 
+
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     user_id = query.from_user.id
     if str(user_id) not in config['ADMIN_IDS']:
+        print(f"Несанкционированный доступ к админ-панели: {user_id}")
         await query.edit_message_text("⛔ У вас нет прав доступа!")
         return
 
     keyboard = [
         [InlineKeyboardButton("👥 Список пользователей", callback_data="list_users")],
+        [InlineKeyboardButton("❌ Удалить пользователя", callback_data="delete_user")],
         [InlineKeyboardButton("📊 Статистика сервера", callback_data="server_stats")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_menu")]
     ]
@@ -369,6 +365,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     users = db.get_all_users()
     if not users:
+        print("Список пользователей пуст")
         await query.edit_message_text("❌ Пользователи не найдены")
         return
 
@@ -377,16 +374,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         expire_date = datetime.strptime(user['expire_date'], '%Y-%m-%d')
         remaining_days = (expire_date - datetime.now()).days
         message += f"• @{user['username']} | 🕒 {remaining_days}д | 📊 {user['traffic_used'] // 1024 ** 3}/{user['traffic_limit'] // 1024 ** 3}ГБ\n"
-    # После инициализации
-    print("Проверка работы X-UI API:")
-    print("Список inbounds:", xui.get_inbounds())
 
-    test_uuid = xui.create_user("test_user", 5, 7)
-    print("Создан тестовый пользователь:", test_uuid)
-
-    if test_uuid:
-        print("Обновление пользователя:",
-              xui.update_user(test_uuid, traffic_gb=10, expire_days=30))
     await query.edit_message_text(message)
 
 
@@ -434,12 +422,14 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /admin"""
     user_id = update.effective_user.id
     if str(user_id) not in config['ADMIN_IDS']:
+        print(f"Несанкционированный доступ к /admin: {user_id}")
         await update.message.reply_text("⛔ У вас нет прав доступа!")
         return
 
     keyboard = [
         [InlineKeyboardButton("👥 Список пользователей", callback_data="list_users")],
-        [InlineKeyboardButton("📊 Статистика сервера", callback_data="server_stats")]
+        [InlineKeyboardButton("📊 Статистика сервера", callback_data="server_stats")],
+        [InlineKeyboardButton("❌ Удалить пользователя", callback_data="delete_user")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -447,6 +437,77 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚙️ Панель администратора:",
         reply_markup=reply_markup
     )
+
+
+async def delete_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню удаления пользователя"""
+    query = update.callback_query
+    await query.answer()
+
+    users = db.get_all_users()
+    keyboard = []
+    for user in users[:10]:
+        keyboard.append([
+            InlineKeyboardButton(
+                f"❌ {user['username']}",
+                callback_data=f"confirm_delete_{user['user_id']}"
+            )
+        ])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_menu")])
+
+    await query.edit_message_text(
+        "Выберите пользователя для удаления:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение удаления"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = int(query.data.split('_')[-1])
+    user_data = db.get_user(user_id)
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Да", callback_data=f"delete_{user_id}"),
+            InlineKeyboardButton("❌ Нет", callback_data="delete_user")
+        ]
+    ]
+
+    await query.edit_message_text(
+        f"Вы уверены, что хотите удалить пользователя?\n"
+        f"👤: @{user_data['username']}\n"
+        f"🆔: {user_data['user_id']}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка удаления пользователя"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = int(query.data.split('_')[-1])
+    user_data = db.get_user(user_id)
+
+    print(f"Начало удаления пользователя: {user_id}")
+
+    # Удаление из X-UI
+    if not xui.delete_user(user_data['uuid']):
+        print(f"Ошибка удаления из X-UI: {user_id}")
+        await query.edit_message_text("❌ Ошибка при удалении из X-UI")
+        return
+
+    # Удаление из БД
+    if not db.delete_user(user_id):
+        print(f"Ошибка удаления из БД: {user_id}")
+        await query.edit_message_text("❌ Ошибка при удалении из базы данных")
+        return
+
+    print(f"Пользователь успешно удален: {user_id}")
+    await query.edit_message_text(f"✅ Пользователь @{user_data['username']} удален")
 
 
 def main():
@@ -471,10 +532,26 @@ def main():
     application.add_handler(CallbackQueryHandler(help_ios, pattern="^help_ios$"))
     application.add_handler(CallbackQueryHandler(help_linux, pattern="^help_linux$"))
     application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_menu$"))
+    application.add_handler(CallbackQueryHandler(delete_user_menu, pattern="^delete_user$"))
+    application.add_handler(CallbackQueryHandler(confirm_delete, pattern="^confirm_delete_"))
+    application.add_handler(CallbackQueryHandler(delete_user, pattern="^delete_"))
 
     # Запускаем бота
     application.run_polling()
 
 
 if __name__ == '__main__':
+    # Проверка работы X-UI API перед запуском
+    print("Проверка работы X-UI API:")
+    print("Список inbounds:", xui.get_inbounds())
+
+    test_uuid = xui.create_user("test_user", 5, 7)
+    print("Тестовый пользователь создан:", test_uuid)
+
+    if test_uuid:
+        print("Обновление пользователя:",
+              xui.update_user(test_uuid, traffic_gb=10, expire_days=30))
+        print("Удаление пользователя:",
+              xui.delete_user(test_uuid))
+
     main()

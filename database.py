@@ -65,6 +65,14 @@ class Database:
             UPDATE users SET {set_clause} WHERE user_id = ?
         ''', values)
         self.conn.commit()
+        return self.cursor.rowcount > 0
+
+    def delete_user(self, user_id):
+        """Удалить пользователя"""
+        print(f"Удаление пользователя из БД: {user_id}")
+        self.cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        self.conn.commit()
+        return self.cursor.rowcount > 0
 
     def close(self):
         self.conn.close()
