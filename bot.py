@@ -43,6 +43,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             # Проверяем соединение с X-UI
             if not xui.check_connection():
+                logger.error("Ошибка подключения к серверу VPN")
                 await update.message.reply_text("❌ Ошибка подключения к серверу VPN")
                 return
 
@@ -53,6 +54,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             if not uuid:
+                logger.error(f"Ошибка при создании VPN-профиля для пользователя {user_id}")
                 await update.message.reply_text("❌ Ошибка при создании VPN-профиля")
                 return
 
@@ -72,10 +74,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         except Exception as e:
-            print("Ошибка при создании пользователя")
+            logger.exception(f"Ошибка при создании пользователя: {str(e)}")
             await update.message.reply_text("⚠️ Системная ошибка. Попробуйте позже.")
     else:
-        print(f"Пользователь уже существует: {user_id}")
+        logger.info(f"Пользователь уже существует: {user_id}")
         await show_main_menu(update, context)
 
 
@@ -83,9 +85,14 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data = db.get_user(user_id)
 
+    if not user_data:
+        logger.error(f"Данные пользователя не найдены: {user_id}")
+        await update.message.reply_text("❌ Ошибка: данные пользователя не найдены")
+        return
+
     # Проверка активности аккаунта
     if not user_data['is_active']:
-        print(f"Попытка доступа к деактивированному аккаунту: {user_id}")
+        logger.warning(f"Попытка доступа к деактивированному аккаунту: {user_id}")
         await update.message.reply_text("❌ Ваш аккаунт деактивирован")
         return
 
@@ -109,22 +116,17 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    message_text = (
+        f"👋 Привет, {update.effective_user.first_name}!\n\n"
+        f"• Осталось дней: {remaining_days}\n"
+        f"• Осталось трафика: {remaining_traffic_gb} ГБ\n\n"
+        "Выберите действие:"
+    )
+
     if update.callback_query:
-        await update.callback_query.edit_message_text(
-            f"👋 Привет, {update.effective_user.first_name}!\n\n"
-            f"• Осталось дней: {remaining_days}\n"
-            f"• Осталось трафика: {remaining_traffic_gb} ГБ\n\n"
-            "Выберите действие:",
-            reply_markup=reply_markup
-        )
+        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup)
     else:
-        await update.message.reply_text(
-            f"👋 Привет, {update.effective_user.first_name}!\n\n"
-            f"• Осталось дней: {remaining_days}\n"
-            f"• Осталось трафика: {remaining_traffic_gb} ГБ\n\n"
-            "Выберите действие:",
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text(message_text, reply_markup=reply_markup)
 
 
 async def renew_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,7 +154,12 @@ async def renew_basic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
     user_data = db.get_user(user_id)
-    print(f"Продление подписки для: {user_id}")
+    logger.info(f"Продление подписки для: {user_id}")
+
+    if not user_data:
+        logger.error(f"Данные пользователя не найдены при продлении: {user_id}")
+        await query.edit_message_text("❌ Ошибка: данные пользователя не найдены")
+        return
 
     # Обновляем дату окончания
     expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
@@ -169,14 +176,15 @@ async def renew_basic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     # Обновляем в X-UI
+    expire_days = (new_expire_date - datetime.now()).days
     result = xui.update_user(
         uuid=user_data['uuid'],
         traffic_gb=new_traffic_limit // (1024 ** 3),
-        expire_days=(new_expire_date - datetime.now()).days
+        expire_days=expire_days
     )
 
     if not result:
-        print(f"Ошибка обновления пользователя в X-UI: {user_id}")
+        logger.error(f"Ошибка обновления пользователя в X-UI: {user_id}")
         await query.edit_message_text("❌ Ошибка при продлении подписки")
         return
 
@@ -193,6 +201,11 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
     user_data = db.get_user(user_id)
+
+    if not user_data:
+        logger.error(f"Данные пользователя не найдены при показе статистики: {user_id}")
+        await query.edit_message_text("❌ Ошибка: данные пользователя не найдены")
+        return
 
     expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
     remaining_days = (expire_date - datetime.now()).days
@@ -336,7 +349,7 @@ async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = query.from_user.id
     if str(user_id) not in config['ADMIN_IDS']:
-        print(f"Несанкционированный доступ к админ-панели: {user_id}")
+        logger.warning(f"Несанкционированный доступ к админ-панели: {user_id}")
         await query.edit_message_text("⛔ У вас нет прав доступа!")
         return
 
@@ -361,7 +374,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     users = db.get_all_users()
     if not users:
-        print("Список пользователей пуст")
+        logger.info("Список пользователей пуст")
         await query.edit_message_text("❌ Пользователи не найдены")
         return
 
@@ -418,7 +431,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /admin"""
     user_id = update.effective_user.id
     if str(user_id) not in config['ADMIN_IDS']:
-        print(f"Несанкционированный доступ к /admin: {user_id}")
+        logger.warning(f"Несанкционированный доступ к /admin: {user_id}")
         await update.message.reply_text("⛔ У вас нет прав доступа!")
         return
 
@@ -465,6 +478,11 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = int(query.data.split('_')[-1])
     user_data = db.get_user(user_id)
 
+    if not user_data:
+        logger.error(f"Пользователь для удаления не найден: {user_id}")
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
     keyboard = [
         [
             InlineKeyboardButton("✅ Да", callback_data=f"delete_{user_id}"),
@@ -488,21 +506,26 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = int(query.data.split('_')[-1])
     user_data = db.get_user(user_id)
 
-    print(f"Начало удаления пользователя: {user_id}")
+    if not user_data:
+        logger.error(f"Пользователь для удаления не найден: {user_id}")
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
+    logger.info(f"Начало удаления пользователя: {user_id}")
 
     # Удаление из X-UI
     if not xui.delete_user(user_data['uuid']):
-        print(f"Ошибка удаления из X-UI: {user_id}")
+        logger.error(f"Ошибка удаления из X-UI: {user_id}")
         await query.edit_message_text("❌ Ошибка при удалении из X-UI")
         return
 
     # Удаление из БД
     if not db.delete_user(user_id):
-        print(f"Ошибка удаления из БД: {user_id}")
+        logger.error(f"Ошибка удаления из БД: {user_id}")
         await query.edit_message_text("❌ Ошибка при удалении из базы данных")
         return
 
-    print(f"Пользователь успешно удален: {user_id}")
+    logger.info(f"Пользователь успешно удален: {user_id}")
     await query.edit_message_text(f"✅ Пользователь @{user_data['username']} удален")
 
 

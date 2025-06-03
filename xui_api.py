@@ -3,9 +3,17 @@ import json
 import uuid
 import logging
 import psutil
+import urllib3
 from datetime import datetime, timedelta
 
+# Отключение предупреждений о неверифицированных SSL-запросах
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # Настройка логгера
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 
@@ -22,6 +30,8 @@ class XUIAPI:
         try:
             url = f"{self.panel_url}/login"
             data = {"username": self.username, "password": self.password}
+
+            logger.info(f"Отправка запроса на логин: {url}")
             response = requests.post(
                 url,
                 json=data,
@@ -31,7 +41,7 @@ class XUIAPI:
 
             # Проверка на пустой ответ
             if not response.text.strip():
-                logger.error("Login error: Empty response from server")
+                logger.error("Ошибка логина: пустой ответ от сервера")
                 return False
 
             try:
@@ -39,24 +49,26 @@ class XUIAPI:
                 if response.status_code == 200 and result.get('success'):
                     self.cookies = response.cookies
                     self.jwt_token = result.get('token', '')
+                    logger.info("Успешный логин в X-UI")
                     return True
-                logger.error(f"Login failed: {result.get('msg', 'Unknown error')}")
+                logger.error(f"Ошибка логина: {result.get('msg', 'Неизвестная ошибка')}")
                 return False
             except json.JSONDecodeError:
-                logger.error(f"Login JSON parse error: {response.text}")
+                logger.error(f"Ошибка парсинга JSON: {response.text}")
                 return False
         except Exception as e:
-            logger.error(f"Login error: {str(e)}")
+            logger.error(f"Ошибка при логине: {str(e)}", exc_info=True)
             return False
 
     def _request(self, method, endpoint, data=None, params=None):
         """Универсальный метод для запросов к API"""
         try:
             url = f"{self.panel_url}{endpoint}"
-            headers = {}
+            headers = {"Content-Type": "application/json"}
             if self.jwt_token:
                 headers["Authorization"] = f"Bearer {self.jwt_token}"
 
+            logger.info(f"Отправка запроса: {method.__name__} {url}")
             response = method(
                 url,
                 json=data,
@@ -69,15 +81,21 @@ class XUIAPI:
 
             # Проверка на пустой ответ
             if not response.text.strip():
-                return {'success': True, 'msg': 'Empty response'}
+                return {'success': True, 'msg': 'Пустой ответ'}
 
             try:
-                return response.json()
+                result = response.json()
+                # Проверка на истекший токен
+                if response.status_code == 401 and 'token' in result.get('msg', '').lower():
+                    logger.warning("Токен истек, выполняем перелогин")
+                    if self._login():
+                        return self._request(method, endpoint, data, params)
+                return result
             except json.JSONDecodeError:
-                logger.error(f"JSON parse error for {url}: {response.text}")
-                return {'success': False, 'msg': 'Invalid JSON response'}
+                logger.error(f"Ошибка парсинга JSON: {response.text}")
+                return {'success': False, 'msg': 'Неверный JSON в ответе'}
         except Exception as e:
-            logger.error(f"Request error: {str(e)}")
+            logger.error(f"Ошибка запроса: {str(e)}", exc_info=True)
             return {'success': False, 'msg': str(e)}
 
     def get_inbounds(self):
@@ -120,7 +138,7 @@ class XUIAPI:
             "enable": True,
             "expiryTime": expire_timestamp,
             "protocol": "vless",
-            "settings": {
+            "settings": json.dumps({
                 "clients": [{
                     "id": client_id,
                     "flow": "xtls-rprx-vision",
@@ -130,8 +148,8 @@ class XUIAPI:
                     "expiryTime": expire_timestamp
                 }],
                 "decryption": "none"
-            },
-            "streamSettings": {
+            }),
+            "streamSettings": json.dumps({
                 "network": "tcp",
                 "security": "tls",
                 "tlsSettings": {
@@ -141,22 +159,23 @@ class XUIAPI:
                         "keyFile": "/etc/letsencrypt/live/divan4ikbmstu.online/privkey.pem"
                     }]
                 }
-            },
-            "sniffing": {
+            }),
+            "sniffing": json.dumps({
                 "enabled": True,
                 "destOverride": ["http", "tls"]
-            }
+            })
         }
 
         if self.create_inbound(data):
             return client_id
+        logger.error("Ошибка при создании пользователя в X-UI")
         return None
 
     def update_user(self, uuid, traffic_gb=None, expire_days=None):
         """Обновить пользователя"""
         inbounds = self.get_inbounds()
         for inbound in inbounds:
-            clients = inbound.get('settings', {}).get('clients', [])
+            clients = json.loads(inbound.get('settings', '{}')).get('clients', [])
             for client in clients:
                 if client.get('id') == uuid:
                     # Нашли нужного пользователя
@@ -166,7 +185,7 @@ class XUIAPI:
                     update_data = inbound.copy()
 
                     # Удаляем ненужные поля
-                    for field in ['id', 'inbound_id', 'streamSettings', 'sniffing']:
+                    for field in ['id', 'inbound_id']:
                         update_data.pop(field, None)
 
                     # Обновляем трафик
@@ -186,19 +205,21 @@ class XUIAPI:
                         c['expiryTime'] = expire_timestamp
 
                         # Обновляем клиентов
-                        update_data["settings"]["clients"] = clients
+                        update_data["settings"] = json.dumps({"clients": clients})
 
                     return self.update_inbound(inbound_id, update_data)
+        logger.error(f"Пользователь для обновления не найден: {uuid}")
         return False
 
     def delete_user(self, uuid):
         """Удалить пользователя по UUID"""
         inbounds = self.get_inbounds()
         for inbound in inbounds:
-            clients = inbound.get('settings', {}).get('clients', [])
+            clients = json.loads(inbound.get('settings', '{}')).get('clients', [])
             for client in clients:
                 if client.get('id') == uuid:
                     return self.del_inbound(inbound['id'])
+        logger.error(f"Пользователь для удаления не найден: {uuid}")
         return False
 
     def generate_config(self, uuid):
@@ -206,7 +227,7 @@ class XUIAPI:
             f"vless://{uuid}@divan4ikbmstu.online:443?"
             f"encryption=none&flow=xtls-rprx-vision&security=tls&"
             f"sni=divan4ikbmstu.online&fp=chrome&"
-            f"type=tcp&headerType=none#MyVPN"
+            f"type=tcp&headerType=none#{uuid[:8]}"
         )
 
     def get_server_stats(self):
@@ -234,7 +255,7 @@ class XUIAPI:
                 'connections': len(inbounds)
             }
         except Exception as e:
-            logger.error(f"Server stats error: {str(e)}")
+            logger.error(f"Ошибка получения статистики сервера: {str(e)}", exc_info=True)
             return {
                 'cpu': 0,
                 'ram': 0,
@@ -245,4 +266,10 @@ class XUIAPI:
 
     def check_connection(self):
         """Проверка соединения с X-UI"""
-        return self._login() and len(self.get_inbounds()) >= 0
+        if not self._login():
+            return "❌ Ошибка аутентификации в X-UI"
+
+        result = self._request(requests.get, "/xui/inbound/list")
+        if result.get('success'):
+            return "✅ Соединение с X-UI установлено"
+        return f"❌ Ошибка соединения: {result.get('msg', 'Неизвестная ошибка')}"
