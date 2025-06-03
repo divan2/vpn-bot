@@ -18,25 +18,86 @@ class XUIAPI:
         self._login()
 
     def _login(self):
-        print("Попытка авторизации в X-UI...")
         try:
             response = requests.post(
                 f"{self.panel_url}/login",
-                data={"username": self.username, "password": self.password},
-                timeout=10
+                json={"username": self.username, "password": self.password},
+                timeout=10,
+                verify=False  # Для самоподписанных сертификатов
             )
-            print(f"Статус авторизации: {response.status_code}")
-
-            if response.status_code == 200:
+            if response.status_code == 200 and response.json().get('success'):
                 self.cookies = response.cookies
-                print("Авторизация успешна")
+                self.jwt_token = response.json().get('token', '')
                 return True
-
-            print(f"Ошибка авторизации: {response.text}")
             return False
         except Exception as e:
-            print(f"Ошибка подключения: {str(e)}")
+            logger.error(f"Login error: {str(e)}")
             return False
+
+    def create_user(self, remark, traffic_gb=40, expire_days=30):
+        client_id = str(uuid.uuid4())
+        expire_timestamp = int((datetime.now() + timedelta(days=expire_days)).timestamp() * 1000
+
+        data = {
+            "up": 0,
+            "down": 0,
+            "total": traffic_gb * 1073741824,
+            "remark": remark,
+            "enable": True,
+            "expiryTime": expire_timestamp,
+            "protocol": "vless",
+            "settings": json.dumps({
+                "clients": [{
+                    "id": client_id,
+                    "flow": "xtls-rprx-vision",
+                    "email": f"{remark}@vpn.com",
+                    "limitIp": 0,
+                    "totalGB": traffic_gb,
+                    "expiryTime": expire_timestamp
+                }],
+                "decryption": "none"
+            }),
+            "streamSettings": json.dumps({
+                "network": "tcp",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": "your-domain.com",
+                    "certificates": [{
+                        "certificateFile": "/path/to/cert.pem",
+                        "keyFile": "/path/to/key.pem"
+                    }]
+                }
+            }),
+            "sniffing": json.dumps({
+                "enabled": True,
+                "destOverride": ["http", "tls"]
+            }),
+            "listen": "",
+            "port": 443,
+            "tag": f"inbound-{uuid.uuid4()}"
+        }
+
+        try:
+            response = requests.post(
+                f"{self.panel_url}/xui/inbound/add",
+                json=data,
+                headers={"Authorization": f"Bearer {self.jwt_token}"} if self.jwt_token else {},
+                cookies=self.cookies,
+                timeout=15,
+                verify=False
+            )
+            if response.status_code == 200 and response.json().get('success'):
+                return client_id
+            return None
+        except Exception as e:
+            logger.error(f"Create user error: {str(e)}")
+            return None
+
+    def generate_config(self, uuid):
+        return (
+            f"vless://{uuid}@your-domain.com:443?type=tcp&security=tls&flow=xtls-rprx-vision"
+            f"&encryption=none&headerType=none&fp=chrome#VPN-Config"
+        )
 
     def _ensure_auth(self):
         if not self.cookies:

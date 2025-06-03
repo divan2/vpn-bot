@@ -38,11 +38,14 @@ SET_TRAFFIC, SET_DAYS = range(2)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    print(f"Обработка /start для user_id={user_id}")
 
     if not db.user_exists(user_id):
-        print(f"Создание нового пользователя: {user_id}")
         try:
+            # Проверяем соединение с X-UI
+            if not xui.check_connection():
+                await update.message.reply_text("❌ Ошибка подключения к серверу VPN")
+                return
+
             uuid = xui.create_user(
                 remark=f"user_{user_id}",
                 traffic_gb=config['TRIAL_TRAFFIC_GB'],
@@ -50,11 +53,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             if not uuid:
-                print(f"Ошибка создания пользователя в X-UI: {user_id}")
-                await update.message.reply_text("❌ Ошибка при создании профиля. Попробуйте позже.")
+                await update.message.reply_text("❌ Ошибка при создании VPN-профиля")
                 return
-
-            print(f"Пользователь создан UUID={uuid}")
 
             db.create_user(
                 user_id=user_id,
@@ -65,19 +65,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             config_link = xui.generate_config(uuid)
-            print(f"Конфиг сгенерирован для {user_id}: {config_link[:50]}...")
-
             await update.message.reply_text(
-                "🎉 Добро пожаловать! Ваш пробный период:\n"
-                f"• {config['TRIAL_DAYS']} дней\n"
-                f"• {config['TRIAL_TRAFFIC_GB']} ГБ трафика\n\n"
-                f"🔑 Ваш конфиг:\n`{config_link}`\n\n"
-                "📚 Инструкции: /help",
+                f"🎉 Ваш VPN-доступ активирован!\n\n"
+                f"🔑 Конфигурация:\n`{config_link}`\n\n"
+                "📚 Инструкции по настройке: /help",
                 parse_mode="Markdown"
             )
         except Exception as e:
-            print(f"Критическая ошибка при создании пользователя: {str(e)}")
-            await update.message.reply_text("⚠️ Системная ошибка. Администратор уведомлен.")
+            print("Ошибка при создании пользователя")
+            await update.message.reply_text("⚠️ Системная ошибка. Попробуйте позже.")
     else:
         print(f"Пользователь уже существует: {user_id}")
         await show_main_menu(update, context)
