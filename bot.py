@@ -43,7 +43,7 @@ try:
         config['XUI_PANEL_URL'],
         config['XUI_USERNAME'],
         config['XUI_PASSWORD'],
-        config.get('XUI_API_PREFIX', '')
+        config.get('XUI_USERNAME', '')
     )
     logger.info("База данных и X-UI API инициализированы")
 except Exception as e:

@@ -141,7 +141,7 @@ class XUIAPI:
                     logger.error("Не удалось декодировать настройки inbound")
                     return None
 
-            clients = settings.get("clients", [])
+            clients = []
             clients.append({
                 "id": client_id,
                 "flow": "xtls-rprx-vision",
