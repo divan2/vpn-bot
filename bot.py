@@ -19,22 +19,36 @@ from database import Database
 # Настройка логгера
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler('vpn_bot.log'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
 # Загрузка конфигурации
-with open('config.json') as f:
-    config = json.load(f)
+try:
+    with open('config.json') as f:
+        config = json.load(f)
+    logger.info("Конфигурация успешно загружена")
+except Exception as e:
+    logger.critical(f"Ошибка загрузки конфигурации: {str(e)}")
+    raise
 
 # Инициализация базы данных и X-UI API
-db = Database('vpn_bot.db')
-xui = xui_api.XUIAPI(
-    config['XUI_PANEL_URL'],
-    config['XUI_USERNAME'],
-    config['XUI_PASSWORD'],
-    config.get('XUI_API_PREFIX', '')
-)
+try:
+    db = Database('vpn_bot.db')
+    xui = xui_api.XUIAPI(
+        config['XUI_PANEL_URL'],
+        config['XUI_USERNAME'],
+        config['XUI_PASSWORD'],
+        config.get('XUI_API_PREFIX', '')
+    )
+    logger.info("База данных и X-UI API инициализированы")
+except Exception as e:
+    logger.critical(f"Ошибка инициализации: {str(e)}")
+    raise
 
 # Состояния для ConversationHandler
 SET_TRAFFIC, SET_DAYS = range(2)
@@ -43,12 +57,14 @@ SET_TRAFFIC, SET_DAYS = range(2)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
+    logger.info(f"Обработка команды /start от пользователя {user_id}")
 
     if not db.user_exists(user_id):
         try:
-            # Проверяем соединение с X-UI
+            logger.debug(f"Новый пользователь {user_id}, создание VPN профиля")
+
             if not xui.check_connection():
-                logger.error("Ошибка подключения к серверу VPN")
+                logger.error(f"Ошибка подключения к серверу VPN для пользователя {user_id}")
                 await update.message.reply_text("❌ Ошибка подключения к серверу VPN")
                 return
 
@@ -72,6 +88,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             config_link = xui.generate_config(uuid, port)
+            logger.info(f"VPN профиль успешно создан для пользователя {user_id}")
+
             await update.message.reply_text(
                 f"🎉 Ваш VPN-доступ активирован!\n\n"
                 f"🔑 Конфигурация:\n`{config_link}`\n\n"
@@ -79,10 +97,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logger.exception(f"Ошибка при создании пользователя: {str(e)}")
+            logger.exception(f"Ошибка при создании пользователя {user_id}: {str(e)}")
             await update.message.reply_text("⚠️ Системная ошибка. Попробуйте позже.")
     else:
-        logger.info(f"Пользователь уже существует: {user_id}")
+        logger.info(f"Пользователь {user_id} уже существует, показ главного меню")
         await show_main_menu(update, context)
 
 
@@ -532,47 +550,57 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    # Создаем приложение
-    application = ApplicationBuilder().token(config['BOT_TOKEN']).build()
+    try:
+        logger.info("Инициализация бота")
 
-    # Регистрируем обработчики команд
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("admin", admin_command))
+        # Создаем приложение
+        application = ApplicationBuilder().token(config['BOT_TOKEN']).build()
 
-    # Обработчики callback-запросов
-    application.add_handler(CallbackQueryHandler(renew_subscription, pattern="^renew$"))
-    application.add_handler(CallbackQueryHandler(renew_basic, pattern="^renew_basic$"))
-    application.add_handler(CallbackQueryHandler(show_stats, pattern="^stats$"))
-    application.add_handler(CallbackQueryHandler(show_help_menu, pattern="^help_menu$"))
-    application.add_handler(CallbackQueryHandler(admin_menu, pattern="^admin_menu$"))
-    application.add_handler(CallbackQueryHandler(list_users, pattern="^list_users$"))
-    application.add_handler(CallbackQueryHandler(server_stats, pattern="^server_stats$"))
-    application.add_handler(CallbackQueryHandler(help_android, pattern="^help_android$"))
-    application.add_handler(CallbackQueryHandler(help_windows, pattern="^help_windows$"))
-    application.add_handler(CallbackQueryHandler(help_ios, pattern="^help_ios$"))
-    application.add_handler(CallbackQueryHandler(help_linux, pattern="^help_linux$"))
-    application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_menu$"))
-    application.add_handler(CallbackQueryHandler(delete_user_menu, pattern="^delete_user$"))
-    application.add_handler(CallbackQueryHandler(confirm_delete, pattern="^confirm_delete_"))
-    application.add_handler(CallbackQueryHandler(delete_user, pattern="^delete_"))
+        # Регистрируем обработчики команд
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("admin", admin_command))
 
-    # Запускаем бота
-    application.run_polling()
+        # Обработчики callback-запросов
+        application.add_handler(CallbackQueryHandler(renew_subscription, pattern="^renew$"))
+        application.add_handler(CallbackQueryHandler(renew_basic, pattern="^renew_basic$"))
+        application.add_handler(CallbackQueryHandler(show_stats, pattern="^stats$"))
+        application.add_handler(CallbackQueryHandler(show_help_menu, pattern="^help_menu$"))
+        application.add_handler(CallbackQueryHandler(admin_menu, pattern="^admin_menu$"))
+        application.add_handler(CallbackQueryHandler(list_users, pattern="^list_users$"))
+        application.add_handler(CallbackQueryHandler(server_stats, pattern="^server_stats$"))
+        application.add_handler(CallbackQueryHandler(help_android, pattern="^help_android$"))
+        application.add_handler(CallbackQueryHandler(help_windows, pattern="^help_windows$"))
+        application.add_handler(CallbackQueryHandler(help_ios, pattern="^help_ios$"))
+        application.add_handler(CallbackQueryHandler(help_linux, pattern="^help_linux$"))
+        application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_menu$"))
+        application.add_handler(CallbackQueryHandler(delete_user_menu, pattern="^delete_user$"))
+        application.add_handler(CallbackQueryHandler(confirm_delete, pattern="^confirm_delete_"))
+        application.add_handler(CallbackQueryHandler(delete_user, pattern="^delete_"))
+
+        logger.info("Бот готов к работе")
+        application.run_polling()
+
+    except Exception as e:
+        logger.critical(f"Критическая ошибка в основном цикле бота: {str(e)}", exc_info=True)
+        raise
 
 
 if __name__ == '__main__':
-    # Проверка работы X-UI API перед запуском
-    print("Проверка работы X-UI API:")
-    print("Список inbounds:", xui.get_inbounds())
+    try:
+        logger.info("Запуск проверки работы X-UI API")
+        inbounds = xui.get_inbounds()
+        logger.info(f"Получено inbounds: {len(inbounds)}")
 
-    test_uuid = xui.create_user("test_user", 5, 7)
-    print("Тестовый пользователь создан:", test_uuid)
+        test_uuid = xui.create_user("test_user", 5, 7)
+        if test_uuid:
+            logger.info(f"Тестовый пользователь создан: {test_uuid}")
+            logger.info(f"Обновление пользователя: {xui.update_user(test_uuid, traffic_gb=10, expire_days=30)}")
+            logger.info(f"Удаление пользователя: {xui.delete_user(test_uuid)}")
+        else:
+            logger.error("Не удалось создать тестового пользователя")
 
-    if test_uuid:
-        print("Обновление пользователя:",
-              xui.update_user(test_uuid, traffic_gb=10, expire_days=30))
-        print("Удаление пользователя:",
-              xui.delete_user(test_uuid))
-
-    main()
+        logger.info("Запуск основного бота")
+        main()
+    except Exception as e:
+        logger.critical(f"Критическая ошибка при запуске: {str(e)}", exc_info=True)
