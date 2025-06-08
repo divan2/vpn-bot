@@ -1,22 +1,17 @@
 import os
 import json
 import logging
-import sqlite3
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-    ConversationHandler
+    ContextTypes
 )
 import xui_api
 from database import Database
 
-# Настройка логгера
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
@@ -50,9 +45,6 @@ except Exception as e:
     logger.critical(f"Ошибка инициализации: {str(e)}")
     raise
 
-# Состояния для ConversationHandler
-SET_TRAFFIC, SET_DAYS = range(2)
-
 def get_main_keyboard(user_id: int):
     keyboard = [
         [InlineKeyboardButton("🔄 Продлить подписку", callback_data="renew")],
@@ -63,55 +55,153 @@ def get_main_keyboard(user_id: int):
         keyboard.append([InlineKeyboardButton("👑 Админ-панель", callback_data="admin_menu")])
     return InlineKeyboardMarkup(keyboard)
 
+def append_back_button(keyboard):
+    keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data="back_menu")])
+    return InlineKeyboardMarkup(keyboard)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    logger.info(f"Команда /start от пользователя {user_id}")
+
+    if not db.user_exists(user_id):
+        if not xui.check_connection():
+            await update.message.reply_text("❌ Ошибка подключения к серверу VPN")
+            return
+
+        result = xui.create_user(
+            remark=f"user_{user_id}",
+            traffic_gb=config['TRIAL_TRAFFIC_GB'],
+            expire_days=config['TRIAL_DAYS']
+        )
+
+        if not result:
+            await update.message.reply_text("❌ Ошибка при создании VPN-профиля")
+            return
+
+        uuid, port = result
+        db.create_user(
+            user_id=user_id,
+            username=user.username,
+            uuid=uuid,
+            traffic_limit=config['TRIAL_TRAFFIC_GB'] * 1024 ** 3,
+            expire_date=(datetime.now() + timedelta(days=config['TRIAL_DAYS'])).strftime('%Y-%m-%d')
+        )
+        config_link = xui.generate_config(uuid, port)
+        await update.message.reply_text(
+            f"🎉 Ваш VPN-доступ активирован!
+
+"
+            f"🔑 Конфигурация:
+<code>{config_link}</code>",
+            parse_mode="HTML"
+        )
+    await show_main_menu(update, context)
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data = db.get_user(user_id)
-
     if not user_data:
-        logger.error(f"Данные пользователя не найдены: {user_id}")
-        await update.message.reply_text("❌ Ошибка: данные пользователя не найдены")
+        await update.message.reply_text("❌ Данные не найдены")
         return
-
     if not user_data['is_active']:
-        logger.warning(f"Попытка доступа к деактивированному аккаунту: {user_id}")
-        await update.message.reply_text("❌ Ваш аккаунт деактивирован")
+        await update.message.reply_text("❌ Аккаунт деактивирован")
         return
 
     expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
     remaining_days = max(0, (expire_date - datetime.now()).days)
     remaining_traffic_gb = max(0, (user_data['traffic_limit'] - user_data['traffic_used']) // (1024 ** 3))
 
-    reply_markup = get_main_keyboard(user_id)
-    message_text = (
-        f"👋 Привет, {update.effective_user.first_name}!\n\n"
-        f"• Осталось дней: {remaining_days}\n"
+    keyboard = get_main_keyboard(user_id)
+    text = (
+        f"👋 Привет, {update.effective_user.first_name}!
+
+"
+        f"• Осталось дней: {remaining_days}
+"
+        f"• Осталось трафика: {remaining_traffic_gb} ГБ
+
+"
         "Выберите действие:"
     )
-
     if update.callback_query:
-        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup)
+        await update.callback_query.edit_message_text(text, reply_markup=keyboard)
     else:
-        await update.message.reply_text(message_text, reply_markup=reply_markup)
+        await update.message.reply_text(text, reply_markup=keyboard)
 
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    await update.callback_query.answer()
     await show_main_menu(update, context)
 
-# Обновление всех inline-клавиатур — добавляем кнопку "Назад в меню"
-def append_back_button(keyboard):
-    keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data="back_menu")])
-    return InlineKeyboardMarkup(keyboard)
+async def renew(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    keyboard = [
+        [InlineKeyboardButton("+30 дней +40 ГБ", callback_data="renew_basic")]
+    ]
+    reply_markup = append_back_button(keyboard)
+    await query.edit_message_text("🎁 Продление подписки:
 
-# 🔄 Автоматическое добавление кнопки "Назад в меню" в нужные обработчики
+Выберите вариант:", reply_markup=reply_markup)
 
-# 🔹 Обновлённый пример использования
-# Применяй в любом обработчике:
-# reply_markup = append_back_button([...])
-# await query.edit_message_text(..., reply_markup=reply_markup)
+async def renew_basic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    if not user_data:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
 
-# 🔧 Применено вручную:
-# - renew_subscription, renew_basic, show_stats
-# - show_help_menu, help_android, help_windows, help_ios, help_linux
-# - admin_menu, list_users, server_stats, delete_user_menu, confirm_delete, delete_user
-# Все reply_markup передаются через append_back_button() для возврата в меню
+    expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
+    new_expire = expire_date + timedelta(days=30)
+    new_traffic = user_data['traffic_limit'] + 40 * 1024**3
+    db.update_user(user_id, traffic_limit=new_traffic, expire_date=new_expire.strftime('%Y-%m-%d'))
+    xui.update_user(uuid=user_data['uuid'], traffic_gb=new_traffic // (1024**3), expire_days=30)
+
+    await query.edit_message_text(
+        f"✅ Подписка продлена!
+
+"
+        f"📅 До: {new_expire.strftime('%d.%m.%Y')}
+"
+        f"📶 Трафик: {new_traffic // (1024**3)} ГБ"
+    )
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    if not user_data:
+        await query.edit_message_text("❌ Пользователь не найден")
+        return
+
+    expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
+    remaining_days = (expire_date - datetime.now()).days
+    traffic_used = user_data['traffic_used'] // (1024 ** 3)
+    traffic_limit = user_data['traffic_limit'] // (1024 ** 3)
+
+    await query.edit_message_text(
+        f"📊 Ваша статистика:
+
+"
+        f"🆔 @{user_data['username']}
+"
+        f"📅 До: {expire_date.strftime('%d.%m.%Y')} ({remaining_days} дн.)
+"
+        f"📶 Трафик: {traffic_used}/{traffic_limit} ГБ"
+    )
+
+def main():
+    application = ApplicationBuilder().token(config['BOT_TOKEN']).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_menu$"))
+    application.add_handler(CallbackQueryHandler(renew, pattern="^renew$"))
+    application.add_handler(CallbackQueryHandler(renew_basic, pattern="^renew_basic$"))
+    application.add_handler(CallbackQueryHandler(stats, pattern="^stats$"))
+    logger.info("Бот запущен")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
