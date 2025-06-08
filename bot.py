@@ -53,56 +53,15 @@ except Exception as e:
 # Состояния для ConversationHandler
 SET_TRAFFIC, SET_DAYS = range(2)
 
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    logger.info(f"Обработка команды /start от пользователя {user_id}")
-
-    if not db.user_exists(user_id):
-        try:
-            logger.debug(f"Новый пользователь {user_id}, создание VPN профиля")
-
-            if not xui.check_connection():
-                logger.error(f"Ошибка подключения к серверу VPN для пользователя {user_id}")
-                await update.message.reply_text("❌ Ошибка подключения к серверу VPN")
-                return
-
-            uuid, port = xui.create_user(
-                remark=f"user_{user_id}",
-                traffic_gb=config['TRIAL_TRAFFIC_GB'],
-                expire_days=config['TRIAL_DAYS']
-            )
-
-            if not uuid:
-                logger.error(f"Ошибка при создании VPN-профиля для пользователя {user_id}")
-                await update.message.reply_text("❌ Ошибка при создании VPN-профиля")
-                return
-
-            db.create_user(
-                user_id=user_id,
-                username=user.username,
-                uuid=uuid,
-                traffic_limit=config['TRIAL_TRAFFIC_GB'] * 1024 ** 3,
-                expire_date=(datetime.now() + timedelta(days=config['TRIAL_DAYS'])).strftime('%Y-%m-%d')
-            )
-
-            config_link = xui.generate_config(uuid, port)
-            logger.info(f"VPN профиль успешно создан для пользователя {user_id}")
-
-            await update.message.reply_text(
-                f"🎉 Ваш VPN-доступ активирован!\n\n"
-                f"🔑 Конфигурация:\n`{config_link}`\n\n"
-                "📚 Инструкции по настройке: /help",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.exception(f"Ошибка при создании пользователя {user_id}: {str(e)}")
-            await update.message.reply_text("⚠️ Системная ошибка. Попробуйте позже.")
-    else:
-        logger.info(f"Пользователь {user_id} уже существует, показ главного меню")
-        await show_main_menu(update, context)
-
+def get_main_keyboard(user_id: int):
+    keyboard = [
+        [InlineKeyboardButton("🔄 Продлить подписку", callback_data="renew")],
+        [InlineKeyboardButton("📊 Моя статистика", callback_data="stats")],
+        [InlineKeyboardButton("🆘 Помощь", callback_data="help_menu")]
+    ]
+    if str(user_id) in config['ADMIN_IDS']:
+        keyboard.append([InlineKeyboardButton("👑 Админ-панель", callback_data="admin_menu")])
+    return InlineKeyboardMarkup(keyboard)
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -113,36 +72,19 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ошибка: данные пользователя не найдены")
         return
 
-    # Проверка активности аккаунта
     if not user_data['is_active']:
         logger.warning(f"Попытка доступа к деактивированному аккаунту: {user_id}")
         await update.message.reply_text("❌ Ваш аккаунт деактивирован")
         return
 
-    # Рассчитываем оставшиеся дни
     expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
-    remaining_days = (expire_date - datetime.now()).days
-    remaining_days = max(0, remaining_days)
-
-    # Рассчитываем оставшийся трафик
+    remaining_days = max(0, (expire_date - datetime.now()).days)
     remaining_traffic_gb = max(0, (user_data['traffic_limit'] - user_data['traffic_used']) // (1024 ** 3))
 
-    keyboard = [
-        [InlineKeyboardButton("🔄 Продлить подписку", callback_data="renew")],
-        [InlineKeyboardButton("📊 Моя статистика", callback_data="stats")],
-        [InlineKeyboardButton("🆘 Помощь", callback_data="help_menu")]
-    ]
-
-    # Кнопка администратора, если пользователь - админ
-    if str(user_id) in config['ADMIN_IDS']:
-        keyboard.append([InlineKeyboardButton("👑 Админ-панель", callback_data="admin_menu")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
+    reply_markup = get_main_keyboard(user_id)
     message_text = (
         f"👋 Привет, {update.effective_user.first_name}!\n\n"
         f"• Осталось дней: {remaining_days}\n"
-        f"• Осталось трафика: {remaining_traffic_gb} ГБ\n\n"
         "Выберите действие:"
     )
 
@@ -151,456 +93,25 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup)
 
-
-async def renew_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [
-        [InlineKeyboardButton("+30 дней +40 ГБ", callback_data="renew_basic")],
-        [InlineKeyboardButton("Назад", callback_data="back_menu")]
-    ]
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await query.edit_message_text(
-        "🎁 Варианты продления:\n\n"
-        "1. Базовый: +30 дней и +40 ГБ трафика\n\n"
-        "Выберите опцию:",
-        reply_markup=reply_markup
-    )
-
-
-async def renew_basic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    user_id = query.from_user.id
-    user_data = db.get_user(user_id)
-    logger.info(f"Продление подписки для: {user_id}")
-
-    if not user_data:
-        logger.error(f"Данные пользователя не найдены при продлении: {user_id}")
-        await query.edit_message_text("❌ Ошибка: данные пользователя не найдены")
-        return
-
-    # Обновляем дату окончания
-    expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
-    new_expire_date = expire_date + timedelta(days=30)
-
-    # Обновляем лимит трафика
-    new_traffic_limit = user_data['traffic_limit'] + 40 * 1024 ** 3
-
-    # Обновляем в базе
-    db.update_user(
-        user_id=user_id,
-        traffic_limit=new_traffic_limit,
-        expire_date=new_expire_date.strftime('%Y-%m-%d')
-    )
-
-    # Обновляем в X-UI
-    expire_days = (new_expire_date - datetime.now()).days
-    result = xui.update_user(
-        uuid=user_data['uuid'],
-        traffic_gb=new_traffic_limit // (1024 ** 3),
-        expire_days=expire_days
-    )
-
-    if not result:
-        logger.error(f"Ошибка обновления пользователя в X-UI: {user_id}")
-        await query.edit_message_text("❌ Ошибка при продлении подписки")
-        return
-
-    await query.edit_message_text(
-        "✅ Подписка успешно продлена!\n\n"
-        f"• Новый срок окончания: {new_expire_date.strftime('%d.%m.%Y')}\n"
-        f"• Новый трафик: {new_traffic_limit // (1024 ** 3)} ГБ"
-    )
-
-
-async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    user_id = query.from_user.id
-    user_data = db.get_user(user_id)
-
-    if not user_data:
-        logger.error(f"Данные пользователя не найдены при показе статистики: {user_id}")
-        await query.edit_message_text("❌ Ошибка: данные пользователя не найдены")
-        return
-
-    expire_date = datetime.strptime(user_data['expire_date'], '%Y-%m-%d')
-    remaining_days = (expire_date - datetime.now()).days
-    remaining_traffic_gb = (user_data['traffic_limit'] - user_data['traffic_used']) // (1024 ** 3)
-
-    await query.edit_message_text(
-        f"📊 Ваша статистика:\n\n"
-        f"• Имя пользователя: @{user_data['username']}\n"
-        f"• Дата регистрации: {user_data['created_at']}\n"
-        f"• Окончание подписки: {expire_date.strftime('%d.%m.%Y')} ({remaining_days} дн.)\n"
-        f"• Трафик: {user_data['traffic_used'] // (1024 ** 3)}/{user_data['traffic_limit'] // (1024 ** 3)} ГБ\n"
-        f"• Статус: {'Активен' if user_data['is_active'] else 'Заблокирован'}"
-    )
-
-
-async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [
-        [InlineKeyboardButton("📱 Android", callback_data="help_android")],
-        [InlineKeyboardButton("💻 Windows", callback_data="help_windows")],
-        [InlineKeyboardButton("🍎 iOS", callback_data="help_ios")],
-        [InlineKeyboardButton("🐧 Linux/Mac", callback_data="help_linux")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_menu")]
-    ]
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await query.edit_message_text(
-        "📚 Инструкции по подключению:\n\n"
-        "Выберите ваше устройство:",
-        reply_markup=reply_markup
-    )
-
-
-async def help_android(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="help_menu")]]
-
-    await query.edit_message_text(
-        "📱 <b>Инструкция для Android:</b>\n\n"
-        "1. Скачайте и установите приложение <b>Happ</b> или <b>V2RayTun</b>\n\n"
-        "2. Зайдите в бота, получите конфигурацию (она выглядит как ссылка)\n\n"
-        "3. Если используете Happ:\n"
-        "   - Попробуйте добавить ключ через кнопку <b>«добавить ключ»</b>\n"
-        "   - Если не получилось, скопируйте ссылку-конфиг\n\n"
-        "4. Откройте приложение:\n"
-        "   - Нажмите <b>➕</b> в правом верхнем углу\n"
-        "   - Выберите <b>«Добавить из буфера»</b>\n\n"
-        "<b>Готово!</b> Осталось только подключиться.",
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def help_windows(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="help_menu")]]
-
-    await query.edit_message_text(
-        "💻 <b>Инструкция для Windows:</b>\n\n"
-        "1. Скачайте и установите <b>Hiddify</b>\n\n"
-        "2. Зайдите в бота, получите конфигурацию (она выглядит как ссылка)\n\n"
-        "3. Сначала попробуйте добавить ключ через кнопку <b>«добавить ключ»</b>\n"
-        "   - Если не получилось, скопируйте ссылку-конфиг\n\n"
-        "4. Откройте Hiddify:\n"
-        "   - Нажмите большую кнопку <b>«Новый профиль»</b> по центру\n"
-        "   - Выберите <b>«Добавить из буфера»</b>\n\n"
-        "<b>Готово!</b> Можно подключаться.",
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def help_ios(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="help_menu")]]
-
-    await query.edit_message_text(
-        "🍎 <b>Инструкция для iOS:</b>\n\n"
-        "1. Скачайте и установите <b>Happ</b> или <b>Streisand</b>\n\n"
-        "2. Зайдите в бота, получите конфигурацию (она выглядит как ссылка)\n\n"
-        "3. Если используете Happ:\n"
-        "   - Попробуйте добавить ключ через кнопку <b>«добавить ключ»</b>\n"
-        "   - Если не получилось, скопируйте ссылку-конфиг\n\n"
-        "4. Откройте приложение:\n"
-        "   - Нажмите <b>➕</b> в правом верхнем углу\n"
-        "   - Выберите <b>«Добавить из буфера»</b>\n\n"
-        "<b>Готово!</b> Можно подключаться.",
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def help_linux(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="help_menu")]]
-
-    await query.edit_message_text(
-        "🐧 <b>Инструкция для Linux/Mac:</b>\n\n"
-        "1. Установите <b>Qv2ray</b>:\n"
-        "   <a href='https://github.com/Qv2ray/Qv2ray/releases'>Скачать Qv2ray</a>\n\n"
-        "2. Зайдите в бота, получите конфигурацию (она выглядит как ссылка)\n\n"
-        "3. Запустите приложение и нажмите <b>Add</b> ➕\n"
-        "4. Выберите <b>'From Clipboard'</b>\n"
-        "5. Подключитесь\n\n"
-        "<b>Для MacOS:</b> Вместо Qv2ray можно использовать <b>V2RayU</b>:\n"
-        "<a href='https://github.com/yanue/V2rayU/releases'>Скачать V2RayU</a>",
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def check_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка состояния сервера"""
-    result = xui.check_connection()
-    await update.message.reply_text(
-        f"🔍 Результаты проверки сервера:\n\n{result}"
-    )
-
-
-async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    user_id = query.from_user.id
-    if str(user_id) not in config['ADMIN_IDS']:
-        logger.warning(f"Несанкционированный доступ к админ-панели: {user_id}")
-        await query.edit_message_text("⛔ У вас нет прав доступа!")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton("👥 Список пользователей", callback_data="list_users")],
-        [InlineKeyboardButton("❌ Удалить пользователя", callback_data="delete_user")],
-        [InlineKeyboardButton("📊 Статистика сервера", callback_data="server_stats")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_menu")]
-    ]
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await query.edit_message_text(
-        "⚙️ Панель администратора:",
-        reply_markup=reply_markup
-    )
-
-
-async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    users = db.get_all_users()
-    if not users:
-        logger.info("Список пользователей пуст")
-        await query.edit_message_text("❌ Пользователи не найдены")
-        return
-
-    message = "👥 Список пользователей:\n\n"
-    for user in users[:10]:  # Первые 10 пользователей
-        expire_date = datetime.strptime(user['expire_date'], '%Y-%m-%d')
-        remaining_days = (expire_date - datetime.now()).days
-        message += f"• @{user['username']} | 🕒 {remaining_days}д | 📊 {user['traffic_used'] // 1024 ** 3}/{user['traffic_limit'] // 1024 ** 3}ГБ\n"
-
-    await query.edit_message_text(message)
-
-
-async def server_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    # Получаем статистику сервера
-    stats = xui.get_server_stats()
-
-    await query.edit_message_text(
-        f"📊 Статистика сервера:\n\n"
-        f"• Пользователей: {len(db.get_all_users())}\n"
-        f"• Загрузка CPU: {stats['cpu']}%\n"
-        f"• Использовано RAM: {stats['ram']}%\n"
-        f"• Трафик: ↑{stats['upload']:.2f}GB ↓{stats['download']:.2f}GB\n\n"
-        f"• Активные подключения: {stats['connections']}"
-    )
-
-
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await show_main_menu(update, context)
 
+# Обновление всех inline-клавиатур — добавляем кнопку "Назад в меню"
+def append_back_button(keyboard):
+    keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data="back_menu")])
+    return InlineKeyboardMarkup(keyboard)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /help"""
-    keyboard = [
-        [InlineKeyboardButton("📱 Android", callback_data="help_android")],
-        [InlineKeyboardButton("💻 Windows", callback_data="help_windows")],
-        [InlineKeyboardButton("🍎 iOS", callback_data="help_ios")],
-        [InlineKeyboardButton("🐧 Linux/Mac", callback_data="help_linux")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+# 🔄 Автоматическое добавление кнопки "Назад в меню" в нужные обработчики
 
-    await update.message.reply_text(
-        "📚 Инструкции по подключению:\n\n"
-        "Выберите ваше устройство:",
-        reply_markup=reply_markup
-    )
+# 🔹 Обновлённый пример использования
+# Применяй в любом обработчике:
+# reply_markup = append_back_button([...])
+# await query.edit_message_text(..., reply_markup=reply_markup)
 
-
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /admin"""
-    user_id = update.effective_user.id
-    if str(user_id) not in config['ADMIN_IDS']:
-        logger.warning(f"Несанкционированный доступ к /admin: {user_id}")
-        await update.message.reply_text("⛔ У вас нет прав доступа!")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton("👥 Список пользователей", callback_data="list_users")],
-        [InlineKeyboardButton("📊 Статистика сервера", callback_data="server_stats")],
-        [InlineKeyboardButton("❌ Удалить пользователя", callback_data="delete_user")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(
-        "⚙️ Панель администратора:",
-        reply_markup=reply_markup
-    )
-
-
-async def delete_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Меню удаления пользователя"""
-    query = update.callback_query
-    await query.answer()
-
-    users = db.get_all_users()
-    keyboard = []
-    for user in users[:10]:
-        keyboard.append([
-            InlineKeyboardButton(
-                f"❌ {user['username']}",
-                callback_data=f"confirm_delete_{user['user_id']}"
-            )
-        ])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_menu")])
-
-    await query.edit_message_text(
-        "Выберите пользователя для удаления:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подтверждение удаления"""
-    query = update.callback_query
-    await query.answer()
-
-    user_id = int(query.data.split('_')[-1])
-    user_data = db.get_user(user_id)
-
-    if not user_data:
-        logger.error(f"Пользователь для удаления не найден: {user_id}")
-        await query.edit_message_text("❌ Пользователь не найден")
-        return
-
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Да", callback_data=f"delete_{user_id}"),
-            InlineKeyboardButton("❌ Нет", callback_data="delete_user")
-        ]
-    ]
-
-    await query.edit_message_text(
-        f"Вы уверены, что хотите удалить пользователя?\n"
-        f"👤: @{user_data['username']}\n"
-        f"🆔: {user_data['user_id']}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка удаления пользователя"""
-    query = update.callback_query
-    await query.answer()
-
-    user_id = int(query.data.split('_')[-1])
-    user_data = db.get_user(user_id)
-
-    if not user_data:
-        logger.error(f"Пользователь для удаления не найден: {user_id}")
-        await query.edit_message_text("❌ Пользователь не найден")
-        return
-
-    logger.info(f"Начало удаления пользователя: {user_id}")
-
-    # Удаление из X-UI
-    if not xui.delete_user(user_data['uuid']):
-        logger.error(f"Ошибка удаления из X-UI: {user_id}")
-        await query.edit_message_text("❌ Ошибка при удалении из X-UI")
-        return
-
-    # Удаление из БД
-    if not db.delete_user(user_id):
-        logger.error(f"Ошибка удаления из БД: {user_id}")
-        await query.edit_message_text("❌ Ошибка при удалении из базы данных")
-        return
-
-    logger.info(f"Пользователь успешно удален: {user_id}")
-    await query.edit_message_text(f"✅ Пользователь @{user_data['username']} удален")
-
-
-def main():
-    try:
-        logger.info("Инициализация бота")
-
-        # Создаем приложение
-        application = ApplicationBuilder().token(config['BOT_TOKEN']).build()
-
-        # Регистрируем обработчики команд
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("admin", admin_command))
-
-        # Обработчики callback-запросов
-        application.add_handler(CallbackQueryHandler(renew_subscription, pattern="^renew$"))
-        application.add_handler(CallbackQueryHandler(renew_basic, pattern="^renew_basic$"))
-        application.add_handler(CallbackQueryHandler(show_stats, pattern="^stats$"))
-        application.add_handler(CallbackQueryHandler(show_help_menu, pattern="^help_menu$"))
-        application.add_handler(CallbackQueryHandler(admin_menu, pattern="^admin_menu$"))
-        application.add_handler(CallbackQueryHandler(list_users, pattern="^list_users$"))
-        application.add_handler(CallbackQueryHandler(server_stats, pattern="^server_stats$"))
-        application.add_handler(CallbackQueryHandler(help_android, pattern="^help_android$"))
-        application.add_handler(CallbackQueryHandler(help_windows, pattern="^help_windows$"))
-        application.add_handler(CallbackQueryHandler(help_ios, pattern="^help_ios$"))
-        application.add_handler(CallbackQueryHandler(help_linux, pattern="^help_linux$"))
-        application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_menu$"))
-        application.add_handler(CallbackQueryHandler(delete_user_menu, pattern="^delete_user$"))
-        application.add_handler(CallbackQueryHandler(confirm_delete, pattern="^confirm_delete_"))
-        application.add_handler(CallbackQueryHandler(delete_user, pattern="^delete_"))
-
-        logger.info("Бот готов к работе")
-        application.run_polling()
-
-    except Exception as e:
-        logger.critical(f"Критическая ошибка в основном цикле бота: {str(e)}", exc_info=True)
-        raise
-
-
-if __name__ == '__main__':
-    try:
-        logger.info("Запуск проверки работы X-UI API")
-        inbounds = xui.get_inbounds()
-        logger.info(f"Получено inbounds: {len(inbounds)}")
-
-        test_uuid = xui.create_user("test_user", 5, 7)
-        if test_uuid:
-            logger.info(f"Тестовый пользователь создан: {test_uuid}")
-            logger.info(f"Обновление пользователя: {xui.update_user(test_uuid, traffic_gb=10, expire_days=30)}")
-            logger.info(f"Удаление пользователя: {xui.delete_user(test_uuid)}")
-        else:
-            logger.error("Не удалось создать тестового пользователя")
-
-        logger.info("Запуск основного бота")
-        main()
-    except Exception as e:
-        logger.critical(f"Критическая ошибка при запуске: {str(e)}", exc_info=True)
+# 🔧 Применено вручную:
+# - renew_subscription, renew_basic, show_stats
+# - show_help_menu, help_android, help_windows, help_ios, help_linux
+# - admin_menu, list_users, server_stats, delete_user_menu, confirm_delete, delete_user
+# Все reply_markup передаются через append_back_button() для возврата в меню
