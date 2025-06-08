@@ -1,3 +1,4 @@
+
 import os
 import json
 import logging
@@ -89,11 +90,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         config_link = xui.generate_config(uuid, port)
         await update.message.reply_text(
-            f"🎉 Ваш VPN-доступ активирован!
-
-"
-            f"🔑 Конфигурация:
-<code>{config_link}</code>",
+            f"🎉 Ваш VPN-доступ активирован!\n\n"
+            f"🔑 Конфигурация:\n<code>{config_link}</code>",
             parse_mode="HTML"
         )
     await show_main_menu(update, context)
@@ -114,14 +112,9 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = get_main_keyboard(user_id)
     text = (
-        f"👋 Привет, {update.effective_user.first_name}!
-
-"
-        f"• Осталось дней: {remaining_days}
-"
-        f"• Осталось трафика: {remaining_traffic_gb} ГБ
-
-"
+        f"👋 Привет, {update.effective_user.first_name}!\n\n"
+        f"• Осталось дней: {remaining_days}\n"
+        f"• Осталось трафика: {remaining_traffic_gb} ГБ\n\n"
         "Выберите действие:"
     )
     if update.callback_query:
@@ -140,9 +133,7 @@ async def renew(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("+30 дней +40 ГБ", callback_data="renew_basic")]
     ]
     reply_markup = append_back_button(keyboard)
-    await query.edit_message_text("🎁 Продление подписки:
-
-Выберите вариант:", reply_markup=reply_markup)
+    await query.edit_message_text("🎁 Продление подписки:\n\nВыберите вариант:", reply_markup=reply_markup)
 
 async def renew_basic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -160,11 +151,8 @@ async def renew_basic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     xui.update_user(uuid=user_data['uuid'], traffic_gb=new_traffic // (1024**3), expire_days=30)
 
     await query.edit_message_text(
-        f"✅ Подписка продлена!
-
-"
-        f"📅 До: {new_expire.strftime('%d.%m.%Y')}
-"
+        f"✅ Подписка продлена!\n\n"
+        f"📅 До: {new_expire.strftime('%d.%m.%Y')}\n"
         f"📶 Трафик: {new_traffic // (1024**3)} ГБ"
     )
 
@@ -183,13 +171,9 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     traffic_limit = user_data['traffic_limit'] // (1024 ** 3)
 
     await query.edit_message_text(
-        f"📊 Ваша статистика:
-
-"
-        f"🆔 @{user_data['username']}
-"
-        f"📅 До: {expire_date.strftime('%d.%m.%Y')} ({remaining_days} дн.)
-"
+        f"📊 Ваша статистика:\n\n"
+        f"🆔 @{user_data['username']}\n"
+        f"📅 До: {expire_date.strftime('%d.%m.%Y')} ({remaining_days} дн.)\n"
         f"📶 Трафик: {traffic_used}/{traffic_limit} ГБ"
     )
 
